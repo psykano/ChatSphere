@@ -45,14 +45,22 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/rooms", s.handleListRooms)
 	s.mux.HandleFunc("GET /api/rooms/code/{code}", s.handleGetRoomByCode)
+	s.mux.HandleFunc("GET /api/rooms/{id}", s.handleGetRoom)
 	s.mux.HandleFunc("POST /api/rooms", s.handleCreateRoom)
 
 	sessions := ws.NewSessionStore(2 * time.Minute)
 	messages := message.NewStore(200)
 	s.hub.SetMessageStore(messages)
 	s.hub.SetSessionStore(sessions)
-	wsHandler := ws.NewHandler(s.hub, func(roomID string) bool {
-		return s.rooms.Get(roomID) != nil
+	wsHandler := ws.NewHandler(s.hub, func(roomID string) string {
+		r := s.rooms.Get(roomID)
+		if r == nil {
+			return "room not found"
+		}
+		if r.IsFull() {
+			return "room is full"
+		}
+		return ""
 	}, sessions, messages)
 	s.mux.Handle("GET /ws", wsHandler)
 }
@@ -76,6 +84,18 @@ func (s *Server) handleGetRoomByCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rm := s.rooms.GetByCode(code)
+	if rm == nil {
+		http.Error(w, `{"error":"room not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(rm)
+}
+
+func (s *Server) handleGetRoom(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rm := s.rooms.Get(id)
 	if rm == nil {
 		http.Error(w, `{"error":"room not found"}`, http.StatusNotFound)
 		return

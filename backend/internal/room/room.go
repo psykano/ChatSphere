@@ -28,6 +28,11 @@ func (r *Room) AddActiveUsers(delta int) {
 	r.ActiveUsers = int(r.activeUsers.Add(int32(delta)))
 }
 
+// IsFull returns true if the room has reached its capacity.
+func (r *Room) IsFull() bool {
+	return int(r.activeUsers.Load()) >= r.Capacity
+}
+
 // generateID returns a random hex ID.
 func generateID() string {
 	b := make([]byte, 16)

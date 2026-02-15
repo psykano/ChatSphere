@@ -260,6 +260,67 @@ func TestCreateRoomAppearsInList(t *testing.T) {
 	}
 }
 
+func TestGetRoomByID(t *testing.T) {
+	srv := New(":0")
+
+	w := postJSON(srv, `{"name":"Test Room","description":"A room","capacity":10,"public":true}`)
+	var created map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&created)
+	id := created["id"].(string)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms/"+id, nil)
+	w = httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var room map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&room)
+	if room["id"] != id {
+		t.Errorf("expected room ID %v, got %v", id, room["id"])
+	}
+	if room["name"] != "Test Room" {
+		t.Errorf("expected name 'Test Room', got %v", room["name"])
+	}
+	if room["capacity"] != float64(10) {
+		t.Errorf("expected capacity 10, got %v", room["capacity"])
+	}
+}
+
+func TestGetRoomByIDNotFound(t *testing.T) {
+	srv := New(":0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms/nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", w.Code)
+	}
+}
+
+func TestGetRoomByIDIncludesActiveUsers(t *testing.T) {
+	srv := New(":0")
+	r := srv.rooms.Create("Active Room", "", "user1", 50, true)
+	r.AddActiveUsers(5)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms/"+r.ID, nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var room map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&room)
+	if room["active_users"] != float64(5) {
+		t.Errorf("expected active_users 5, got %v", room["active_users"])
+	}
+}
+
 func TestGetRoomByCode(t *testing.T) {
 	srv := New(":0")
 

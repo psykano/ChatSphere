@@ -109,8 +109,11 @@ func TestHandlerJoinAndChat(t *testing.T) {
 }
 
 func TestHandlerJoinInvalidRoom(t *testing.T) {
-	ts, _, _ := newHandlerTestServer(t, func(roomID string) bool {
-		return roomID == "valid-room"
+	ts, _, _ := newHandlerTestServer(t, func(roomID string) string {
+		if roomID == "valid-room" {
+			return ""
+		}
+		return "room not found"
 	})
 	defer ts.Close()
 
@@ -541,6 +544,170 @@ func TestHandlerNoBackfillForNewConnection(t *testing.T) {
 	}
 	if env.Type == "backfill" {
 		t.Error("new connections should not receive backfill")
+	}
+}
+
+func TestHandlerJoinRoomFull(t *testing.T) {
+	full := false
+	ts, hub, _ := newHandlerTestServer(t, func(roomID string) string {
+		if full {
+			return "room is full"
+		}
+		return ""
+	})
+	defer ts.Close()
+
+	// First client joins successfully.
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Mark room as full.
+	full = true
+
+	// Second client should be rejected.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	conn2, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial error: %v", err)
+	}
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	payload, _ := json.Marshal(JoinPayload{RoomID: "room1", Username: "bob"})
+	env, _ := json.Marshal(Envelope{Type: "join", Payload: payload})
+
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer writeCancel()
+	if err := conn2.Write(writeCtx, websocket.MessageText, env); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	// The server should close the connection because the room is full.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	_, _, err = conn2.Read(readCtx)
+	if err == nil {
+		t.Fatal("expected connection to be closed for full room")
+	}
+
+	// Only the first client should remain.
+	if hub.ClientCount("room1") != 1 {
+		t.Errorf("expected 1 client, got %d", hub.ClientCount("room1"))
+	}
+}
+
+func TestHandlerLeaveUpdatesClientCount(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Two clients join.
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hub.ClientCount("room1") != 2 {
+		t.Fatalf("expected 2 clients, got %d", hub.ClientCount("room1"))
+	}
+
+	// Drain system messages from both.
+	drainSystemMessages(t, conn1, 2) // "alice joined" + "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice disconnects.
+	conn1.Close(websocket.StatusNormalClosure, "")
+
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hub.ClientCount("room1") != 1 {
+		t.Fatalf("expected 1 client after alice left, got %d", hub.ClientCount("room1"))
+	}
+
+	// Bob should receive "alice left" system message.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn2.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	var msg message.Message
+	json.Unmarshal(env.Payload, &msg)
+
+	if msg.Type != message.TypeSystem {
+		t.Errorf("expected system message, got %q", msg.Type)
+	}
+	if !strings.Contains(msg.Content, "left") {
+		t.Errorf("expected 'left' in message content, got %q", msg.Content)
+	}
+	if msg.Username != "alice" {
+		t.Errorf("expected username 'alice', got %q", msg.Username)
+	}
+
+	// Bob disconnects — room should be empty.
+	conn2.Close(websocket.StatusNormalClosure, "")
+
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hub.ClientCount("room1") != 0 {
+		t.Fatalf("expected 0 clients after all left, got %d", hub.ClientCount("room1"))
+	}
+}
+
+func TestHandlerJoinBroadcastsSystemMessage(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first.
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Drain "alice joined" from conn1.
+	drainSystemMessages(t, conn1, 1)
+
+	// Bob joins — alice should receive "bob joined" system message.
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn1.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	var msg message.Message
+	json.Unmarshal(env.Payload, &msg)
+
+	if msg.Type != message.TypeSystem {
+		t.Errorf("expected system message, got %q", msg.Type)
+	}
+	if !strings.Contains(msg.Content, "joined") {
+		t.Errorf("expected 'joined' in content, got %q", msg.Content)
+	}
+	if msg.Username != "bob" {
+		t.Errorf("expected username 'bob', got %q", msg.Username)
 	}
 }
 

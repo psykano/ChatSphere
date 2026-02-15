@@ -13,9 +13,9 @@ import (
 	"nhooyr.io/websocket"
 )
 
-// RoomValidator checks whether a room ID is valid and returns true if the
-// client is allowed to join.
-type RoomValidator func(roomID string) bool
+// RoomValidator checks whether a room ID is valid and the client is allowed
+// to join. It returns an empty string on success or an error reason on failure.
+type RoomValidator func(roomID string) string
 
 // Handler handles WebSocket upgrade requests and client message loops.
 type Handler struct {
@@ -122,9 +122,11 @@ func (h *Handler) handleJoin(ctx context.Context, client *Client) bool {
 		return false
 	}
 
-	if h.validateRoom != nil && !h.validateRoom(payload.RoomID) {
-		closeWithError(client.conn, "room not found")
-		return false
+	if h.validateRoom != nil {
+		if reason := h.validateRoom(payload.RoomID); reason != "" {
+			closeWithError(client.conn, reason)
+			return false
+		}
 	}
 
 	// Attempt session resumption.
