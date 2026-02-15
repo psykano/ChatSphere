@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
-	"time"
 
 	"github.com/christopherjohns/chatsphere/internal/message"
 	"nhooyr.io/websocket"
@@ -14,6 +13,7 @@ import (
 // Client represents a connected WebSocket user.
 type Client struct {
 	conn     *websocket.Conn
+	send     chan []byte
 	userID   string
 	username string
 	roomID   string
@@ -24,6 +24,7 @@ type Client struct {
 type Hub struct {
 	mu      sync.RWMutex
 	rooms   map[string]map[*Client]struct{}
+	conns   *ConnManager
 	onJoin  func(roomID string, delta int)
 }
 
@@ -32,8 +33,14 @@ type Hub struct {
 func NewHub(onJoin func(roomID string, delta int)) *Hub {
 	return &Hub{
 		rooms:  make(map[string]map[*Client]struct{}),
+		conns:  NewConnManager(),
 		onJoin: onJoin,
 	}
+}
+
+// ConnMgr returns the connection manager for this hub.
+func (h *Hub) ConnMgr() *ConnManager {
+	return h.conns
 }
 
 // Envelope is the JSON structure sent over the WebSocket.
@@ -53,8 +60,11 @@ type ChatPayload struct {
 	Content string `json:"content"`
 }
 
-// addClient registers a client in its room.
-func (h *Hub) addClient(c *Client) {
+// addClient registers a client in its room and starts its write pump.
+// Returns a context that is cancelled when the client is removed.
+func (h *Hub) addClient(c *Client) context.Context {
+	ctx := h.conns.Add(c)
+
 	h.mu.Lock()
 	if h.rooms[c.roomID] == nil {
 		h.rooms[c.roomID] = make(map[*Client]struct{})
@@ -65,10 +75,13 @@ func (h *Hub) addClient(c *Client) {
 	if h.onJoin != nil {
 		h.onJoin(c.roomID, 1)
 	}
+	return ctx
 }
 
-// removeClient unregisters a client from its room.
+// removeClient unregisters a client from its room and stops its write pump.
 func (h *Hub) removeClient(c *Client) {
+	h.conns.Remove(c)
+
 	h.mu.Lock()
 	if clients, ok := h.rooms[c.roomID]; ok {
 		delete(clients, c)
@@ -100,7 +113,7 @@ func (h *Hub) Broadcast(roomID string, msg *message.Message) {
 
 	h.mu.RLock()
 	clients := h.rooms[roomID]
-	// Copy the set so we can release the lock before writing.
+	// Copy the set so we can release the lock before sending.
 	targets := make([]*Client, 0, len(clients))
 	for c := range clients {
 		targets = append(targets, c)
@@ -108,11 +121,7 @@ func (h *Hub) Broadcast(roomID string, msg *message.Message) {
 	h.mu.RUnlock()
 
 	for _, c := range targets {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := c.conn.Write(ctx, websocket.MessageText, envData); err != nil {
-			log.Printf("ws: write to client %s failed: %v", c.userID, err)
-		}
-		cancel()
+		h.conns.Send(c, envData)
 	}
 }
 

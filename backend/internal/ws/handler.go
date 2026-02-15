@@ -54,7 +54,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.hub.addClient(client)
+	connCtx := h.hub.addClient(client)
 	defer h.hub.removeClient(client)
 
 	// Broadcast a system message that the user joined.
@@ -67,7 +67,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	})
 
-	h.readLoop(r.Context(), client)
+	h.readLoop(r.Context(), connCtx, client)
 
 	// Broadcast a system message that the user left.
 	h.hub.Broadcast(client.roomID, &message.Message{
@@ -125,9 +125,16 @@ func (h *Handler) handleJoin(ctx context.Context, client *Client) bool {
 	return true
 }
 
-// readLoop reads messages from the client until the connection closes.
-func (h *Handler) readLoop(ctx context.Context, client *Client) {
+// readLoop reads messages from the client until the connection closes
+// or the connection manager cancels connCtx.
+func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client *Client) {
 	for {
+		select {
+		case <-connCtx.Done():
+			return
+		default:
+		}
+
 		_, data, err := client.conn.Read(ctx)
 		if err != nil {
 			// Normal close or context cancelled.
