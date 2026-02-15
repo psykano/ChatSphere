@@ -186,3 +186,73 @@ func TestHubClientCountEmpty(t *testing.T) {
 		t.Error("expected 0 for nonexistent room")
 	}
 }
+
+func TestHubOnBroadcastCallback(t *testing.T) {
+	var called atomic.Int32
+	hub := NewHub(nil)
+	hub.SetOnBroadcast(func(roomID string) {
+		if roomID == "room1" {
+			called.Add(1)
+		}
+	})
+
+	ts := newTestServer(t, hub, "room1")
+	defer ts.Close()
+
+	conn := dialWS(t, ts.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	hub.Broadcast("room1", &message.Message{
+		ID:      "msg1",
+		RoomID:  "room1",
+		Content: "hello",
+		Type:    message.TypeChat,
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	if called.Load() != 1 {
+		t.Errorf("expected onBroadcast called once, got %d", called.Load())
+	}
+}
+
+func TestHubDisconnectRoom(t *testing.T) {
+	hub := NewHub(nil)
+
+	ts := newTestServer(t, hub, "room1")
+	defer ts.Close()
+
+	conn := dialWS(t, ts.URL)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if hub.ClientCount("room1") != 1 {
+		t.Fatalf("expected 1 client, got %d", hub.ClientCount("room1"))
+	}
+
+	hub.DisconnectRoom("room1")
+
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if hub.ClientCount("room1") != 0 {
+		t.Errorf("expected 0 clients after DisconnectRoom, got %d", hub.ClientCount("room1"))
+	}
+}
+
+func TestHubDisconnectRoomNoClients(t *testing.T) {
+	hub := NewHub(nil)
+	// Should not panic on empty room.
+	hub.DisconnectRoom("nonexistent")
+}

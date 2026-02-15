@@ -1,7 +1,9 @@
 package room
 
 import (
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestManagerCreateAndGet(t *testing.T) {
@@ -156,5 +158,217 @@ func TestGenerateCode(t *testing.T) {
 	// With 36^6 possibilities, 100 codes should all be unique.
 	if len(seen) != 100 {
 		t.Errorf("expected 100 unique codes, got %d", len(seen))
+	}
+}
+
+func TestRoomExpiredByMessageInactivity(t *testing.T) {
+	m := NewManager()
+	r := m.Create("test", "", "user1", 50, true)
+
+	msgTTL := 2 * time.Hour
+	emptyTTL := 15 * time.Minute
+
+	// Room was just created: lastMessageAt = now. Should not be expired.
+	if r.Expired(msgTTL, emptyTTL, time.Now()) {
+		t.Error("new room should not be expired")
+	}
+
+	// Simulate 2 hours passing since last message.
+	r.mu.Lock()
+	r.lastMessageAt = time.Now().Add(-2*time.Hour - time.Second)
+	r.mu.Unlock()
+
+	if !r.Expired(msgTTL, emptyTTL, time.Now()) {
+		t.Error("room with no messages for 2h should be expired")
+	}
+}
+
+func TestRoomExpiredByEmptyRoom(t *testing.T) {
+	m := NewManager()
+	r := m.Create("test", "", "user1", 50, true)
+
+	msgTTL := 2 * time.Hour
+	emptyTTL := 15 * time.Minute
+
+	// Room has users — lastUserLeftAt is zero. Should not expire via empty check.
+	if r.Expired(msgTTL, emptyTTL, time.Now()) {
+		t.Error("room with zero lastUserLeftAt should not expire via empty check")
+	}
+
+	// All users left 15+ minutes ago.
+	r.TouchUserLeft()
+	r.mu.Lock()
+	r.lastUserLeftAt = time.Now().Add(-15*time.Minute - time.Second)
+	// Keep lastMessageAt recent so only the empty check triggers.
+	r.lastMessageAt = time.Now()
+	r.mu.Unlock()
+
+	if !r.Expired(msgTTL, emptyTTL, time.Now()) {
+		t.Error("room empty for 15min should be expired")
+	}
+}
+
+func TestRoomNotExpiredWhenUsersPresent(t *testing.T) {
+	m := NewManager()
+	r := m.Create("test", "", "user1", 50, true)
+
+	msgTTL := 2 * time.Hour
+	emptyTTL := 15 * time.Minute
+
+	// Someone left, making room empty.
+	r.TouchUserLeft()
+
+	// But then someone joined, clearing the left timestamp.
+	r.ClearUserLeft()
+
+	// Even with recent lastMessageAt, the room should not expire.
+	if r.Expired(msgTTL, emptyTTL, time.Now()) {
+		t.Error("room should not be expired after user joined back")
+	}
+}
+
+func TestRoomTouchMessageResetsExpiration(t *testing.T) {
+	m := NewManager()
+	r := m.Create("test", "", "user1", 50, true)
+
+	msgTTL := 2 * time.Hour
+	emptyTTL := 15 * time.Minute
+
+	// Set last message to 2h ago.
+	r.mu.Lock()
+	r.lastMessageAt = time.Now().Add(-2*time.Hour - time.Second)
+	r.mu.Unlock()
+
+	if !r.Expired(msgTTL, emptyTTL, time.Now()) {
+		t.Fatal("expected room to be expired before touch")
+	}
+
+	// Send a new message.
+	r.TouchMessage()
+
+	if r.Expired(msgTTL, emptyTTL, time.Now()) {
+		t.Error("room should not be expired after TouchMessage")
+	}
+}
+
+func TestManagerReapExpiresRooms(t *testing.T) {
+	m := NewManager()
+	r1 := m.Create("active", "", "user1", 50, true)
+	r2 := m.Create("stale", "", "user1", 50, true)
+
+	m.msgTTL = 2 * time.Hour
+	m.emptyTTL = 15 * time.Minute
+
+	// Make r2 stale (no messages for 2h+).
+	r2.mu.Lock()
+	r2.lastMessageAt = time.Now().Add(-3 * time.Hour)
+	r2.mu.Unlock()
+
+	var expiredIDs []string
+	m.onExpire = func(roomID string) {
+		expiredIDs = append(expiredIDs, roomID)
+	}
+
+	m.reap()
+
+	if m.Get(r1.ID) == nil {
+		t.Error("active room should not be deleted")
+	}
+	if m.Get(r2.ID) != nil {
+		t.Error("stale room should be deleted")
+	}
+	if len(expiredIDs) != 1 || expiredIDs[0] != r2.ID {
+		t.Errorf("expected onExpire for %q, got %v", r2.ID, expiredIDs)
+	}
+}
+
+func TestManagerReapEmptyRoom(t *testing.T) {
+	m := NewManager()
+	r := m.Create("empty", "", "user1", 50, true)
+
+	m.msgTTL = 2 * time.Hour
+	m.emptyTTL = 15 * time.Minute
+
+	// All users left 20 minutes ago.
+	r.mu.Lock()
+	r.lastUserLeftAt = time.Now().Add(-20 * time.Minute)
+	r.mu.Unlock()
+
+	var expired int32
+	m.onExpire = func(roomID string) {
+		atomic.AddInt32(&expired, 1)
+	}
+
+	m.reap()
+
+	if m.Get(r.ID) != nil {
+		t.Error("empty room should be deleted after 15min")
+	}
+	if atomic.LoadInt32(&expired) != 1 {
+		t.Errorf("expected 1 expiration callback, got %d", atomic.LoadInt32(&expired))
+	}
+}
+
+func TestManagerReapKeepsRecentEmptyRoom(t *testing.T) {
+	m := NewManager()
+	r := m.Create("just-emptied", "", "user1", 50, true)
+
+	m.msgTTL = 2 * time.Hour
+	m.emptyTTL = 15 * time.Minute
+
+	// Users left just 5 minutes ago.
+	r.mu.Lock()
+	r.lastUserLeftAt = time.Now().Add(-5 * time.Minute)
+	r.mu.Unlock()
+
+	m.reap()
+
+	if m.Get(r.ID) == nil {
+		t.Error("recently-emptied room should not be deleted yet")
+	}
+}
+
+func TestManagerStartExpirationReapsOverTime(t *testing.T) {
+	m := NewManager()
+	r := m.Create("stale", "", "user1", 50, true)
+	roomID := r.ID
+
+	// Set lastMessageAt far in the past so it's clearly expired.
+	r.mu.Lock()
+	r.lastMessageAt = time.Now().Add(-time.Hour)
+	r.mu.Unlock()
+
+	var expired atomic.Int32
+	// Use 1ms TTLs — the room's lastMessageAt is 1h ago, well past 1ms.
+	// The reap interval is max(ttl/2, 1s) = 1s, so we need to wait >1s.
+	m.StartExpiration(time.Millisecond, time.Millisecond, func(roomID string) {
+		expired.Add(1)
+	})
+
+	// Wait for at least one reap cycle (interval is 1s minimum).
+	deadline := time.Now().Add(3 * time.Second)
+	for m.Get(roomID) != nil && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if m.Get(roomID) != nil {
+		t.Error("room should have been reaped by the background loop")
+	}
+	if expired.Load() < 1 {
+		t.Error("expected at least one expiration callback")
+	}
+}
+
+func TestCreateRoomInitializesLastMessageAt(t *testing.T) {
+	m := NewManager()
+	before := time.Now()
+	r := m.Create("test", "", "user1", 50, true)
+
+	r.mu.Lock()
+	lastMsg := r.lastMessageAt
+	r.mu.Unlock()
+
+	if lastMsg.Before(before) {
+		t.Error("lastMessageAt should be set to creation time")
 	}
 }

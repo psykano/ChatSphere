@@ -24,12 +24,13 @@ type Client struct {
 
 // Hub manages WebSocket clients grouped by room.
 type Hub struct {
-	mu       sync.RWMutex
-	rooms    map[string]map[*Client]struct{}
-	conns    *ConnManager
-	messages *message.Store
-	sessions *SessionStore
-	onJoin   func(roomID string, delta int)
+	mu          sync.RWMutex
+	rooms       map[string]map[*Client]struct{}
+	conns       *ConnManager
+	messages    *message.Store
+	sessions    *SessionStore
+	onJoin      func(roomID string, delta int)
+	onBroadcast func(roomID string)
 }
 
 // NewHub creates a new Hub. The onJoin callback is called with +1/-1
@@ -50,6 +51,11 @@ func (h *Hub) SetMessageStore(store *message.Store) {
 // SetSessionStore sets the session store used to track last message IDs.
 func (h *Hub) SetSessionStore(sessions *SessionStore) {
 	h.sessions = sessions
+}
+
+// SetOnBroadcast sets a callback invoked after each broadcast for a room.
+func (h *Hub) SetOnBroadcast(fn func(roomID string)) {
+	h.onBroadcast = fn
 }
 
 // ConnMgr returns the connection manager for this hub.
@@ -152,6 +158,28 @@ func (h *Hub) Broadcast(roomID string, msg *message.Message) {
 		if h.conns.Send(c, envData) && h.sessions != nil {
 			h.sessions.SetLastMessageID(c.sessionID, msg.ID)
 		}
+	}
+
+	if h.onBroadcast != nil {
+		h.onBroadcast(roomID)
+	}
+}
+
+// DisconnectRoom closes all client connections in a room and removes them
+// from the hub. The onJoin callback is NOT fired for these removals since
+// the room is being expired.
+func (h *Hub) DisconnectRoom(roomID string) {
+	h.mu.Lock()
+	clients := h.rooms[roomID]
+	targets := make([]*Client, 0, len(clients))
+	for c := range clients {
+		targets = append(targets, c)
+	}
+	delete(h.rooms, roomID)
+	h.mu.Unlock()
+
+	for _, c := range targets {
+		h.conns.Remove(c)
 	}
 }
 

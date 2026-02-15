@@ -30,6 +30,16 @@ func New(addr string) *Server {
 	s.hub = ws.NewHub(func(roomID string, delta int) {
 		if r := rm.Get(roomID); r != nil {
 			r.AddActiveUsers(delta)
+			if delta > 0 {
+				r.ClearUserLeft()
+			} else if r.ActiveUsers <= 0 {
+				r.TouchUserLeft()
+			}
+		}
+	})
+	s.hub.SetOnBroadcast(func(roomID string) {
+		if r := rm.Get(roomID); r != nil {
+			r.TouchMessage()
 		}
 	})
 	s.routes()
@@ -63,6 +73,11 @@ func (s *Server) routes() {
 		return ""
 	}, sessions, messages)
 	s.mux.Handle("GET /ws", wsHandler)
+
+	s.rooms.StartExpiration(2*time.Hour, 15*time.Minute, func(roomID string) {
+		s.hub.DisconnectRoom(roomID)
+		messages.DeleteRoom(roomID)
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
