@@ -89,6 +89,14 @@ type ChatPayload struct {
 	Content string `json:"content"`
 }
 
+// ErrorPayload is sent by the server when a client message is rejected.
+type ErrorPayload struct {
+	Message string `json:"message"`
+}
+
+// maxMessageLength is the maximum allowed length for a chat message.
+const maxMessageLength = 2000
+
 // addClient registers a client in its room and starts its write pump.
 // Returns a context that is cancelled when the client is removed.
 func (h *Hub) addClient(c *Client) context.Context {

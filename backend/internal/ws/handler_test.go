@@ -711,6 +711,380 @@ func TestHandlerJoinBroadcastsSystemMessage(t *testing.T) {
 	}
 }
 
+func TestHandlerChatEmptyContent(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1) // "alice joined"
+
+	// Send empty content.
+	chatPayload, _ := json.Marshal(ChatPayload{Content: ""})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	// Should receive an error envelope, not a chat broadcast.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if env.Type != "error" {
+		t.Errorf("expected type 'error', got %q", env.Type)
+	}
+
+	var errPayload ErrorPayload
+	if err := json.Unmarshal(env.Payload, &errPayload); err != nil {
+		t.Fatalf("unmarshal error payload: %v", err)
+	}
+	if errPayload.Message != "message content is required" {
+		t.Errorf("expected 'message content is required', got %q", errPayload.Message)
+	}
+}
+
+func TestHandlerChatWhitespaceOnly(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1)
+
+	// Send whitespace-only content.
+	chatPayload, _ := json.Marshal(ChatPayload{Content: "   \t\n  "})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	// Should receive an error, not a broadcast.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	if env.Type != "error" {
+		t.Errorf("expected type 'error', got %q", env.Type)
+	}
+}
+
+func TestHandlerChatContentTrimmed(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1)
+
+	// Send content with leading/trailing whitespace.
+	chatPayload, _ := json.Marshal(ChatPayload{Content: "  hello world  "})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	if env.Type != "chat" {
+		t.Fatalf("expected type 'chat', got %q", env.Type)
+	}
+
+	var msg message.Message
+	json.Unmarshal(env.Payload, &msg)
+	if msg.Content != "hello world" {
+		t.Errorf("expected trimmed content 'hello world', got %q", msg.Content)
+	}
+}
+
+func TestHandlerChatExceedsMaxLength(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1)
+
+	// Send content that exceeds the max length.
+	longContent := strings.Repeat("a", maxMessageLength+1)
+	chatPayload, _ := json.Marshal(ChatPayload{Content: longContent})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	if env.Type != "error" {
+		t.Errorf("expected type 'error', got %q", env.Type)
+	}
+
+	var errPayload ErrorPayload
+	json.Unmarshal(env.Payload, &errPayload)
+	if !strings.Contains(errPayload.Message, "maximum length") {
+		t.Errorf("expected max length error, got %q", errPayload.Message)
+	}
+}
+
+func TestHandlerChatAtMaxLength(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1)
+
+	// Send content exactly at max length — should succeed.
+	exactContent := strings.Repeat("b", maxMessageLength)
+	chatPayload, _ := json.Marshal(ChatPayload{Content: exactContent})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	if env.Type != "chat" {
+		t.Errorf("expected type 'chat' for max-length message, got %q", env.Type)
+	}
+}
+
+func TestHandlerChatBroadcastToMultipleClients(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Connect three clients to the same room.
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	conn3 := dialAndJoin(t, ts.URL, "room1", "charlie")
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hub.ClientCount("room1") != 3 {
+		t.Fatalf("expected 3 clients, got %d", hub.ClientCount("room1"))
+	}
+
+	// Drain system messages.
+	drainSystemMessages(t, conn1, 3) // alice joined, bob joined, charlie joined
+	drainSystemMessages(t, conn2, 2) // bob joined, charlie joined
+	drainSystemMessages(t, conn3, 1) // charlie joined
+
+	// Alice sends a message.
+	chatPayload, _ := json.Marshal(ChatPayload{Content: "hello from alice"})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn1.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	// All three should receive the message.
+	for i, conn := range []*websocket.Conn{conn1, conn2, conn3} {
+		readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, data, err := conn.Read(readCtx)
+		readCancel()
+		if err != nil {
+			t.Fatalf("client %d read error: %v", i, err)
+		}
+
+		var env Envelope
+		json.Unmarshal(data, &env)
+		if env.Type != "chat" {
+			t.Errorf("client %d: expected 'chat', got %q", i, env.Type)
+		}
+
+		var msg message.Message
+		json.Unmarshal(env.Payload, &msg)
+		if msg.Content != "hello from alice" {
+			t.Errorf("client %d: expected 'hello from alice', got %q", i, msg.Content)
+		}
+		if msg.Username != "alice" {
+			t.Errorf("client %d: expected username 'alice', got %q", i, msg.Username)
+		}
+	}
+}
+
+func TestHandlerChatRoomIsolation(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Two clients in different rooms.
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	conn2 := dialAndJoin(t, ts.URL, "room2", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for (hub.ClientCount("room1") == 0 || hub.ClientCount("room2") == 0) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	drainSystemMessages(t, conn1, 1) // alice joined
+	drainSystemMessages(t, conn2, 1) // bob joined
+
+	// Alice sends a message in room1.
+	chatPayload, _ := json.Marshal(ChatPayload{Content: "room1 only"})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn1.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	// conn1 should receive the message.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, data, err := conn1.Read(readCtx)
+	readCancel()
+	if err != nil {
+		t.Fatalf("conn1 read error: %v", err)
+	}
+	var env Envelope
+	json.Unmarshal(data, &env)
+	if env.Type != "chat" {
+		t.Errorf("expected 'chat', got %q", env.Type)
+	}
+
+	// conn2 should NOT receive the message.
+	readCtx2, readCancel2 := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer readCancel2()
+	_, _, err = conn2.Read(readCtx2)
+	if err == nil {
+		t.Fatal("conn2 should not receive messages from room1")
+	}
+}
+
+func TestHandlerMessagePersistence(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1)
+
+	// Send a message.
+	chatPayload, _ := json.Marshal(ChatPayload{Content: "persistent msg"})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	// Read back the broadcast.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	var msg message.Message
+	json.Unmarshal(env.Payload, &msg)
+
+	// Verify message fields.
+	if msg.ID == "" {
+		t.Error("expected message to have an ID")
+	}
+	if msg.RoomID != "room1" {
+		t.Errorf("expected room_id 'room1', got %q", msg.RoomID)
+	}
+	if msg.UserID == "" {
+		t.Error("expected message to have a user_id")
+	}
+	if msg.Username != "alice" {
+		t.Errorf("expected username 'alice', got %q", msg.Username)
+	}
+	if msg.Content != "persistent msg" {
+		t.Errorf("expected content 'persistent msg', got %q", msg.Content)
+	}
+	if msg.Type != message.TypeChat {
+		t.Errorf("expected type 'chat', got %q", msg.Type)
+	}
+	if msg.CreatedAt.IsZero() {
+		t.Error("expected created_at to be set")
+	}
+}
+
 // drainSystemMessages reads and discards n messages from the connection.
 func drainSystemMessages(t *testing.T, conn *websocket.Conn, n int) {
 	t.Helper()

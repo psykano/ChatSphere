@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/christopherjohns/chatsphere/internal/message"
@@ -254,7 +255,16 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 		switch env.Type {
 		case "chat":
 			var payload ChatPayload
-			if err := json.Unmarshal(env.Payload, &payload); err != nil || payload.Content == "" {
+			if err := json.Unmarshal(env.Payload, &payload); err != nil {
+				continue
+			}
+			content := strings.TrimSpace(payload.Content)
+			if content == "" {
+				h.sendError(ctx, client, "message content is required")
+				continue
+			}
+			if len(content) > maxMessageLength {
+				h.sendError(ctx, client, "message exceeds maximum length of 2000 characters")
 				continue
 			}
 			h.hub.Broadcast(client.roomID, &message.Message{
@@ -262,11 +272,28 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 				RoomID:    client.roomID,
 				UserID:    client.userID,
 				Username:  client.username,
-				Content:   payload.Content,
+				Content:   content,
 				Type:      message.TypeChat,
 				CreatedAt: time.Now(),
 			})
 		}
+	}
+}
+
+// sendError writes an error envelope to the client.
+func (h *Handler) sendError(ctx context.Context, client *Client, msg string) {
+	data, err := json.Marshal(ErrorPayload{Message: msg})
+	if err != nil {
+		return
+	}
+	env, err := json.Marshal(Envelope{Type: "error", Payload: data})
+	if err != nil {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	if err := client.conn.Write(writeCtx, websocket.MessageText, env); err != nil {
+		log.Printf("ws: failed to write error to client %s: %v", client.userID, err)
 	}
 }
 
