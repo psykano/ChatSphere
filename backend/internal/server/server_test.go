@@ -71,6 +71,111 @@ func TestListRoomsWithData(t *testing.T) {
 	}
 }
 
+func TestListRoomsSortedByActiveUsers(t *testing.T) {
+	srv := New(":0")
+	r1 := srv.rooms.Create("Low Activity", "", "user1", 50, true)
+	r2 := srv.rooms.Create("High Activity", "", "user1", 50, true)
+	r3 := srv.rooms.Create("Mid Activity", "", "user1", 50, true)
+
+	r1.AddActiveUsers(2)
+	r2.AddActiveUsers(15)
+	r3.AddActiveUsers(7)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var rooms []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&rooms); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(rooms) != 3 {
+		t.Fatalf("expected 3 rooms, got %d", len(rooms))
+	}
+
+	// Verify sorted by active_users descending
+	if rooms[0]["name"] != "High Activity" {
+		t.Errorf("expected first room 'High Activity', got %v", rooms[0]["name"])
+	}
+	if rooms[0]["active_users"] != float64(15) {
+		t.Errorf("expected first room active_users=15, got %v", rooms[0]["active_users"])
+	}
+	if rooms[1]["name"] != "Mid Activity" {
+		t.Errorf("expected second room 'Mid Activity', got %v", rooms[1]["name"])
+	}
+	if rooms[1]["active_users"] != float64(7) {
+		t.Errorf("expected second room active_users=7, got %v", rooms[1]["active_users"])
+	}
+	if rooms[2]["name"] != "Low Activity" {
+		t.Errorf("expected third room 'Low Activity', got %v", rooms[2]["name"])
+	}
+	if rooms[2]["active_users"] != float64(2) {
+		t.Errorf("expected third room active_users=2, got %v", rooms[2]["active_users"])
+	}
+}
+
+func TestListRoomsExcludesPrivateRooms(t *testing.T) {
+	srv := New(":0")
+	srv.rooms.Create("Public Room", "", "user1", 50, true)
+	priv := srv.rooms.Create("Private Room", "", "user1", 10, false)
+	priv.AddActiveUsers(100) // High activity, but should still be excluded
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	var rooms []map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&rooms)
+
+	if len(rooms) != 1 {
+		t.Fatalf("expected 1 public room, got %d", len(rooms))
+	}
+	if rooms[0]["name"] != "Public Room" {
+		t.Errorf("expected 'Public Room', got %v", rooms[0]["name"])
+	}
+}
+
+func TestListRoomsResponseFields(t *testing.T) {
+	srv := New(":0")
+	r := srv.rooms.Create("Test Room", "A description", "user1", 50, true)
+	r.AddActiveUsers(3)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	var rooms []map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&rooms)
+
+	if len(rooms) != 1 {
+		t.Fatalf("expected 1 room, got %d", len(rooms))
+	}
+
+	room := rooms[0]
+	if room["id"] == nil || room["id"] == "" {
+		t.Error("expected non-empty id")
+	}
+	if room["name"] != "Test Room" {
+		t.Errorf("expected name 'Test Room', got %v", room["name"])
+	}
+	if room["description"] != "A description" {
+		t.Errorf("expected description 'A description', got %v", room["description"])
+	}
+	if room["capacity"] != float64(50) {
+		t.Errorf("expected capacity 50, got %v", room["capacity"])
+	}
+	if room["public"] != true {
+		t.Errorf("expected public true, got %v", room["public"])
+	}
+	if room["active_users"] != float64(3) {
+		t.Errorf("expected active_users 3, got %v", room["active_users"])
+	}
+}
+
 func postJSON(srv *Server, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/rooms", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
