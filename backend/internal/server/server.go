@@ -10,25 +10,28 @@ import (
 	"time"
 
 	"github.com/christopherjohns/chatsphere/internal/message"
+	"github.com/christopherjohns/chatsphere/internal/ratelimit"
 	"github.com/christopherjohns/chatsphere/internal/room"
 	"github.com/christopherjohns/chatsphere/internal/ws"
 )
 
 // Server is the main HTTP server for ChatSphere.
 type Server struct {
-	addr  string
-	mux   *http.ServeMux
-	rooms *room.Manager
-	hub   *ws.Hub
+	addr        string
+	mux         *http.ServeMux
+	rooms       *room.Manager
+	hub         *ws.Hub
+	createLimit *ratelimit.IPLimiter
 }
 
 // New creates a new Server listening on addr.
 func New(addr string) *Server {
 	rm := room.NewManager()
 	s := &Server{
-		addr:  addr,
-		mux:   http.NewServeMux(),
-		rooms: rm,
+		addr:        addr,
+		mux:         http.NewServeMux(),
+		rooms:       rm,
+		createLimit: ratelimit.NewIPLimiter(3, time.Hour),
 	}
 	s.hub = ws.NewHub(func(roomID string, delta int) {
 		if r := rm.Get(roomID); r != nil {
@@ -158,7 +161,28 @@ type createRoomRequest struct {
 	Public      bool   `json:"public"`
 }
 
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		// First entry is the original client
+		if i := strings.IndexByte(fwd, ','); i > 0 {
+			return strings.TrimSpace(fwd[:i])
+		}
+		return strings.TrimSpace(fwd)
+	}
+	// Strip port from RemoteAddr
+	addr := r.RemoteAddr
+	if i := strings.LastIndex(addr, ":"); i > 0 {
+		return addr[:i]
+	}
+	return addr
+}
+
 func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
+	if !s.createLimit.Allow(clientIP(r)) {
+		http.Error(w, `{"error":"rate limit exceeded, max 3 rooms per hour"}`, http.StatusTooManyRequests)
+		return
+	}
+
 	var req createRoomRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)

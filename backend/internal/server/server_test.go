@@ -177,8 +177,15 @@ func TestListRoomsResponseFields(t *testing.T) {
 }
 
 func postJSON(srv *Server, body string) *httptest.ResponseRecorder {
+	return postJSONFrom(srv, body, "")
+}
+
+func postJSONFrom(srv *Server, body, remoteAddr string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/rooms", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
 	w := httptest.NewRecorder()
 	srv.mux.ServeHTTP(w, req)
 	return w
@@ -486,5 +493,64 @@ func TestCreateRoomTrimWhitespace(t *testing.T) {
 	}
 	if room["description"] != "Desc" {
 		t.Errorf("expected trimmed description 'Desc', got %v", room["description"])
+	}
+}
+
+func TestCreateRoomRateLimitEnforced(t *testing.T) {
+	srv := New(":0")
+	ip := "10.0.0.1:12345"
+	body := `{"name":"Room","capacity":10,"public":true}`
+
+	for i := 0; i < 3; i++ {
+		w := postJSONFrom(srv, body, ip)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("request %d: expected 201, got %d", i+1, w.Code)
+		}
+	}
+
+	w := postJSONFrom(srv, body, ip)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("4th request: expected 429, got %d", w.Code)
+	}
+}
+
+func TestCreateRoomRateLimitPerIP(t *testing.T) {
+	srv := New(":0")
+	body := `{"name":"Room","capacity":10,"public":true}`
+
+	// Exhaust limit for IP A
+	for i := 0; i < 3; i++ {
+		postJSONFrom(srv, body, "10.0.0.1:12345")
+	}
+
+	// IP B should still be allowed
+	w := postJSONFrom(srv, body, "10.0.0.2:12345")
+	if w.Code != http.StatusCreated {
+		t.Fatalf("different IP should be allowed, got %d", w.Code)
+	}
+}
+
+func TestCreateRoomRateLimitXForwardedFor(t *testing.T) {
+	srv := New(":0")
+	body := `{"name":"Room","capacity":10,"public":true}`
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/rooms", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", "203.0.113.50, 70.41.3.18")
+		w := httptest.NewRecorder()
+		srv.mux.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("request %d: expected 201, got %d", i+1, w.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/rooms", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", "203.0.113.50, 70.41.3.18")
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("4th request via X-Forwarded-For should be 429, got %d", w.Code)
 	}
 }
