@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/christopherjohns/chatsphere/internal/message"
 	"github.com/christopherjohns/chatsphere/internal/room"
 	"github.com/christopherjohns/chatsphere/internal/ws"
 )
@@ -44,9 +45,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/rooms", s.handleListRooms)
 
 	sessions := ws.NewSessionStore(2 * time.Minute)
+	messages := message.NewStore(200)
+	s.hub.SetMessageStore(messages)
+	s.hub.SetSessionStore(sessions)
 	wsHandler := ws.NewHandler(s.hub, func(roomID string) bool {
 		return s.rooms.Get(roomID) != nil
-	}, sessions)
+	}, sessions, messages)
 	s.mux.Handle("GET /ws", wsHandler)
 }
 

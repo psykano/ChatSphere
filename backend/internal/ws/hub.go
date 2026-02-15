@@ -24,10 +24,12 @@ type Client struct {
 
 // Hub manages WebSocket clients grouped by room.
 type Hub struct {
-	mu      sync.RWMutex
-	rooms   map[string]map[*Client]struct{}
-	conns   *ConnManager
-	onJoin  func(roomID string, delta int)
+	mu       sync.RWMutex
+	rooms    map[string]map[*Client]struct{}
+	conns    *ConnManager
+	messages *message.Store
+	sessions *SessionStore
+	onJoin   func(roomID string, delta int)
 }
 
 // NewHub creates a new Hub. The onJoin callback is called with +1/-1
@@ -38,6 +40,16 @@ func NewHub(onJoin func(roomID string, delta int)) *Hub {
 		conns:  NewConnManager(),
 		onJoin: onJoin,
 	}
+}
+
+// SetMessageStore sets the message store used for backfill on reconnect.
+func (h *Hub) SetMessageStore(store *message.Store) {
+	h.messages = store
+}
+
+// SetSessionStore sets the session store used to track last message IDs.
+func (h *Hub) SetSessionStore(sessions *SessionStore) {
+	h.sessions = sessions
 }
 
 // ConnMgr returns the connection manager for this hub.
@@ -107,8 +119,13 @@ func (h *Hub) removeClient(c *Client) {
 	}
 }
 
-// Broadcast sends a message to all clients in a room.
+// Broadcast sends a message to all clients in a room and persists it
+// to the message store for backfill on reconnect.
 func (h *Hub) Broadcast(roomID string, msg *message.Message) {
+	if h.messages != nil {
+		h.messages.Append(msg)
+	}
+
 	data, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("ws: failed to marshal message: %v", err)
@@ -132,7 +149,9 @@ func (h *Hub) Broadcast(roomID string, msg *message.Message) {
 	h.mu.RUnlock()
 
 	for _, c := range targets {
-		h.conns.Send(c, envData)
+		if h.conns.Send(c, envData) && h.sessions != nil {
+			h.sessions.SetLastMessageID(c.sessionID, msg.ID)
+		}
 	}
 }
 

@@ -16,7 +16,10 @@ func newHandlerTestServer(t *testing.T, validateRoom RoomValidator) (*httptest.S
 	t.Helper()
 	hub := NewHub(nil)
 	sessions := NewSessionStore(30 * time.Second)
-	handler := NewHandler(hub, validateRoom, sessions)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, validateRoom, sessions, messages)
 	return httptest.NewServer(handler), hub, sessions
 }
 
@@ -295,6 +298,10 @@ func TestHandlerSessionResumption(t *testing.T) {
 		t.Errorf("expected username 'alice' preserved, got %q", sp2.Username)
 	}
 
+	// No backfill expected here because alice was the only client and no
+	// messages were sent while she was disconnected. The "alice left" system
+	// message was sent while she was still in the hub, updating her LastMessageID.
+
 	// Wait for client to be registered.
 	deadline = time.Now().Add(2 * time.Second)
 	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
@@ -357,7 +364,10 @@ func TestHandlerSessionResumptionWrongRoom(t *testing.T) {
 func TestHandlerSessionResumptionExpired(t *testing.T) {
 	hub := NewHub(nil)
 	sessions := NewSessionStore(50 * time.Millisecond) // Very short TTL for testing.
-	handler := NewHandler(hub, nil, sessions)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -384,6 +394,153 @@ func TestHandlerSessionResumptionExpired(t *testing.T) {
 	}
 	if sp2.SessionID == sp1.SessionID {
 		t.Error("should have created a new session for expired session")
+	}
+}
+
+func TestHandlerBackfillOnReconnect(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// 1. Alice and Bob connect to room1.
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	// Wait for both to register.
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Drain system messages (alice joined, bob joined) from both connections.
+	drainSystemMessages(t, conn1, 2) // "alice joined" + "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// 2. Alice disconnects.
+	conn1.Close(websocket.StatusNormalClosure, "")
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Drain "alice left" from Bob's connection.
+	drainSystemMessages(t, conn2, 1)
+
+	// 3. Bob sends some messages while Alice is offline.
+	for _, content := range []string{"msg1", "msg2", "msg3"} {
+		chatPayload, _ := json.Marshal(ChatPayload{Content: content})
+		chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := conn2.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+			cancel()
+			t.Fatalf("write chat error: %v", err)
+		}
+		cancel()
+
+		// Bob receives his own message.
+		readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, _, err := conn2.Read(readCtx)
+		readCancel()
+		if err != nil {
+			t.Fatalf("bob read own message error: %v", err)
+		}
+	}
+
+	// 4. Alice reconnects — should receive backfill.
+	conn3, sp3 := dialJoinAndReadSession(t, ts.URL, "room1", "", sp1.SessionID)
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+
+	if !sp3.Resumed {
+		t.Fatal("expected session to be resumed")
+	}
+
+	// Read the backfill envelope.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, backfillData, err := conn3.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read backfill error: %v", err)
+	}
+
+	var backfillEnv Envelope
+	if err := json.Unmarshal(backfillData, &backfillEnv); err != nil {
+		t.Fatalf("unmarshal backfill envelope error: %v", err)
+	}
+	if backfillEnv.Type != "backfill" {
+		t.Fatalf("expected type 'backfill', got %q", backfillEnv.Type)
+	}
+
+	var backfillMsgs []message.Message
+	if err := json.Unmarshal(backfillEnv.Payload, &backfillMsgs); err != nil {
+		t.Fatalf("unmarshal backfill messages error: %v", err)
+	}
+
+	// Should contain: "msg1" + "msg2" + "msg3" (chat messages sent while alice was offline).
+	// Note: "alice left" is NOT included because it was broadcast while alice was still
+	// in the hub, which updated her LastMessageID past it.
+	if len(backfillMsgs) != 3 {
+		t.Fatalf("expected 3 backfill messages, got %d", len(backfillMsgs))
+	}
+
+	for i, content := range []string{"msg1", "msg2", "msg3"} {
+		if backfillMsgs[i].Content != content {
+			t.Errorf("backfill[%d]: expected content %q, got %q", i, content, backfillMsgs[i].Content)
+		}
+		if backfillMsgs[i].Type != message.TypeChat {
+			t.Errorf("backfill[%d]: expected type 'chat', got %q", i, backfillMsgs[i].Type)
+		}
+	}
+}
+
+func TestHandlerNoBackfillForNewConnection(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Connect and immediately send a chat to populate the message store.
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	chatPayload, _ := json.Marshal(ChatPayload{Content: "hello"})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn1.Write(ctx, websocket.MessageText, chatEnv)
+	drainSystemMessages(t, conn1, 1) // the chat message
+
+	// New client joins — should NOT receive backfill (only new connections get session, not backfill).
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Bob should get "bob joined" system message, not a backfill.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn2.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if env.Type == "backfill" {
+		t.Error("new connections should not receive backfill")
 	}
 }
 

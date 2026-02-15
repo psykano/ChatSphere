@@ -15,6 +15,10 @@ type Session struct {
 	RoomID    string
 	CreatedAt time.Time
 
+	// LastMessageID is the ID of the last message delivered to this session.
+	// Used to determine which messages to backfill on reconnect.
+	LastMessageID string
+
 	// disconnectedAt is set when the client disconnects. A zero value
 	// means the client is currently connected.
 	disconnectedAt time.Time
@@ -82,6 +86,15 @@ func (ss *SessionStore) MarkConnected(id string) {
 	defer ss.mu.Unlock()
 	if s, ok := ss.sessions[id]; ok {
 		s.disconnectedAt = time.Time{}
+	}
+}
+
+// SetLastMessageID records the ID of the last message delivered to this session.
+func (ss *SessionStore) SetLastMessageID(id, messageID string) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if s, ok := ss.sessions[id]; ok {
+		s.LastMessageID = messageID
 	}
 }
 

@@ -22,14 +22,16 @@ type Handler struct {
 	hub          *Hub
 	validateRoom RoomValidator
 	sessions     *SessionStore
+	messages     *message.Store
 }
 
 // NewHandler creates a new WebSocket Handler.
-func NewHandler(hub *Hub, validateRoom RoomValidator, sessions *SessionStore) *Handler {
+func NewHandler(hub *Hub, validateRoom RoomValidator, sessions *SessionStore, messages *message.Store) *Handler {
 	return &Handler{
 		hub:          hub,
 		validateRoom: validateRoom,
 		sessions:     sessions,
+		messages:     messages,
 	}
 }
 
@@ -154,6 +156,11 @@ func (h *Handler) handleJoin(ctx context.Context, client *Client) bool {
 	// Send session info back to client.
 	h.sendSessionInfo(ctx, client, resumed)
 
+	// Send missed messages on session resumption.
+	if resumed {
+		h.sendBackfill(ctx, client)
+	}
+
 	return true
 }
 
@@ -180,6 +187,45 @@ func (h *Handler) sendSessionInfo(ctx context.Context, client *Client, resumed b
 	if err := client.conn.Write(writeCtx, websocket.MessageText, env); err != nil {
 		log.Printf("ws: failed to write session info: %v", err)
 	}
+}
+
+// sendBackfill sends missed messages to a client that is resuming a session.
+func (h *Handler) sendBackfill(ctx context.Context, client *Client) {
+	if h.messages == nil {
+		return
+	}
+
+	sess := h.sessions.Get(client.sessionID)
+	if sess == nil {
+		return
+	}
+
+	missed := h.messages.After(client.roomID, sess.LastMessageID)
+	if len(missed) == 0 {
+		return
+	}
+
+	data, err := json.Marshal(missed)
+	if err != nil {
+		log.Printf("ws: failed to marshal backfill: %v", err)
+		return
+	}
+
+	env, err := json.Marshal(Envelope{Type: "backfill", Payload: data})
+	if err != nil {
+		log.Printf("ws: failed to marshal backfill envelope: %v", err)
+		return
+	}
+
+	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	if err := client.conn.Write(writeCtx, websocket.MessageText, env); err != nil {
+		log.Printf("ws: failed to write backfill: %v", err)
+	}
+
+	// Update last message ID to the last backfilled message.
+	last := missed[len(missed)-1]
+	h.sessions.SetLastMessageID(client.sessionID, last.ID)
 }
 
 // readLoop reads messages from the client until the connection closes

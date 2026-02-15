@@ -332,4 +332,94 @@ describe("ReconnectingWS", () => {
 
     ws.disconnect();
   });
+
+  it("unpacks backfill envelope into individual onMessage calls", () => {
+    const onMessage = vi.fn();
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      onMessage,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope({ resumed: true }));
+
+    // Simulate backfill envelope with 3 missed messages.
+    lastSocket().simulateMessage({
+      type: "backfill",
+      payload: [
+        {
+          id: "msg-1",
+          room_id: "room1",
+          user_id: "user-1",
+          username: "bob",
+          content: "hello",
+          type: "chat",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        {
+          id: "msg-2",
+          room_id: "room1",
+          username: "system",
+          content: "alice left the room",
+          type: "system",
+          created_at: "2026-01-01T00:00:01Z",
+        },
+        {
+          id: "msg-3",
+          room_id: "room1",
+          user_id: "user-1",
+          username: "bob",
+          content: "anyone here?",
+          type: "chat",
+          created_at: "2026-01-01T00:00:02Z",
+        },
+      ],
+    });
+
+    expect(onMessage).toHaveBeenCalledTimes(3);
+    expect(onMessage).toHaveBeenNthCalledWith(1, {
+      type: "chat",
+      payload: expect.objectContaining({ id: "msg-1", content: "hello" }),
+    });
+    expect(onMessage).toHaveBeenNthCalledWith(2, {
+      type: "system",
+      payload: expect.objectContaining({
+        id: "msg-2",
+        content: "alice left the room",
+      }),
+    });
+    expect(onMessage).toHaveBeenNthCalledWith(3, {
+      type: "chat",
+      payload: expect.objectContaining({
+        id: "msg-3",
+        content: "anyone here?",
+      }),
+    });
+
+    ws.disconnect();
+  });
+
+  it("does not call onMessage for empty backfill", () => {
+    const onMessage = vi.fn();
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      onMessage,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope({ resumed: true }));
+
+    lastSocket().simulateMessage({
+      type: "backfill",
+      payload: [],
+    });
+
+    expect(onMessage).not.toHaveBeenCalled();
+
+    ws.disconnect();
+  });
 });

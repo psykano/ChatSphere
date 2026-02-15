@@ -16,6 +16,16 @@ export interface SessionPayload {
   resumed: boolean;
 }
 
+export interface BackfillMessage {
+  id: string;
+  room_id: string;
+  user_id?: string;
+  username?: string;
+  content: string;
+  type: string;
+  created_at: string;
+}
+
 export interface ReconnectingWSOptions {
   url: string;
   roomID: string;
@@ -113,6 +123,14 @@ export class ReconnectingWS {
         this.retryCount = 0;
         this.setState("connected");
         this.opts.onSession?.(session);
+        return;
+      }
+
+      if (envelope.type === "backfill") {
+        const messages = envelope.payload as BackfillMessage[];
+        for (const msg of messages) {
+          this.opts.onMessage?.({ type: msg.type, payload: msg });
+        }
         return;
       }
 
