@@ -12,12 +12,14 @@ import (
 
 // Client represents a connected WebSocket user.
 type Client struct {
-	conn     *websocket.Conn
-	send     chan []byte
-	userID   string
-	username string
-	roomID   string
-	hub      *Hub
+	conn      *websocket.Conn
+	send      chan []byte
+	userID    string
+	username  string
+	roomID    string
+	sessionID string
+	resumed   bool
+	hub       *Hub
 }
 
 // Hub manages WebSocket clients grouped by room.
@@ -51,8 +53,17 @@ type Envelope struct {
 
 // JoinPayload is sent by the client to join a room.
 type JoinPayload struct {
-	RoomID   string `json:"room_id"`
-	Username string `json:"username"`
+	RoomID    string `json:"room_id"`
+	Username  string `json:"username"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// SessionPayload is sent by the server after a successful join or resume.
+type SessionPayload struct {
+	SessionID string `json:"session_id"`
+	UserID    string `json:"user_id"`
+	Username  string `json:"username"`
+	Resumed   bool   `json:"resumed"`
 }
 
 // ChatPayload is sent by the client to post a message.

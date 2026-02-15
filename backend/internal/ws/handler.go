@@ -19,15 +19,17 @@ type RoomValidator func(roomID string) bool
 
 // Handler handles WebSocket upgrade requests and client message loops.
 type Handler struct {
-	hub           *Hub
-	validateRoom  RoomValidator
+	hub          *Hub
+	validateRoom RoomValidator
+	sessions     *SessionStore
 }
 
 // NewHandler creates a new WebSocket Handler.
-func NewHandler(hub *Hub, validateRoom RoomValidator) *Handler {
+func NewHandler(hub *Hub, validateRoom RoomValidator, sessions *SessionStore) *Handler {
 	return &Handler{
 		hub:          hub,
 		validateRoom: validateRoom,
+		sessions:     sessions,
 	}
 }
 
@@ -55,17 +57,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	connCtx := h.hub.addClient(client)
-	defer h.hub.removeClient(client)
+	defer func() {
+		h.hub.removeClient(client)
+		h.sessions.MarkDisconnected(client.sessionID)
+	}()
 
-	// Broadcast a system message that the user joined.
-	h.hub.Broadcast(client.roomID, &message.Message{
-		ID:        generateClientID(),
-		RoomID:    client.roomID,
-		Username:  client.username,
-		Content:   client.username + " joined the room",
-		Type:      message.TypeSystem,
-		CreatedAt: time.Now(),
-	})
+	// Only broadcast "joined" for new connections, not resumptions.
+	if !client.resumed {
+		h.hub.Broadcast(client.roomID, &message.Message{
+			ID:        generateClientID(),
+			RoomID:    client.roomID,
+			Username:  client.username,
+			Content:   client.username + " joined the room",
+			Type:      message.TypeSystem,
+			CreatedAt: time.Now(),
+		})
+	}
 
 	h.readLoop(r.Context(), connCtx, client)
 
@@ -81,12 +88,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleJoin reads the first message from the client and expects a "join"
-// envelope. Returns true on success.
+// envelope. It supports session resumption via session_id in the payload.
+// Returns true on success, and sets client.resumed if the session was resumed.
 func (h *Handler) handleJoin(ctx context.Context, client *Client) bool {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	joinCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	_, data, err := client.conn.Read(ctx)
+	_, data, err := client.conn.Read(joinCtx)
 	if err != nil {
 		log.Printf("ws: read join error: %v", err)
 		return false
@@ -111,18 +119,67 @@ func (h *Handler) handleJoin(ctx context.Context, client *Client) bool {
 		closeWithError(client.conn, "room_id is required")
 		return false
 	}
-	if payload.Username == "" {
-		payload.Username = "anon-" + client.userID[:6]
-	}
 
 	if h.validateRoom != nil && !h.validateRoom(payload.RoomID) {
 		closeWithError(client.conn, "room not found")
 		return false
 	}
 
-	client.roomID = payload.RoomID
-	client.username = payload.Username
+	// Attempt session resumption.
+	resumed := false
+	if payload.SessionID != "" {
+		if sess := h.sessions.Get(payload.SessionID); sess != nil && !sess.connected() && sess.RoomID == payload.RoomID {
+			client.userID = sess.UserID
+			client.username = sess.Username
+			client.sessionID = sess.ID
+			h.sessions.MarkConnected(sess.ID)
+			resumed = true
+		}
+	}
+
+	if !resumed {
+		if payload.Username == "" {
+			payload.Username = "anon-" + client.userID[:6]
+		}
+		client.roomID = payload.RoomID
+		client.username = payload.Username
+		sess := h.sessions.Create(client.userID, client.username, client.roomID)
+		client.sessionID = sess.ID
+	} else {
+		client.roomID = payload.RoomID
+	}
+
+	client.resumed = resumed
+
+	// Send session info back to client.
+	h.sendSessionInfo(ctx, client, resumed)
+
 	return true
+}
+
+// sendSessionInfo writes the session envelope to the client.
+func (h *Handler) sendSessionInfo(ctx context.Context, client *Client, resumed bool) {
+	sp := SessionPayload{
+		SessionID: client.sessionID,
+		UserID:    client.userID,
+		Username:  client.username,
+		Resumed:   resumed,
+	}
+	data, err := json.Marshal(sp)
+	if err != nil {
+		log.Printf("ws: failed to marshal session payload: %v", err)
+		return
+	}
+	env, err := json.Marshal(Envelope{Type: "session", Payload: data})
+	if err != nil {
+		log.Printf("ws: failed to marshal session envelope: %v", err)
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	if err := client.conn.Write(writeCtx, websocket.MessageText, env); err != nil {
+		log.Printf("ws: failed to write session info: %v", err)
+	}
 }
 
 // readLoop reads messages from the client until the connection closes

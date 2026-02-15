@@ -12,11 +12,12 @@ import (
 	"nhooyr.io/websocket"
 )
 
-func newHandlerTestServer(t *testing.T, validateRoom RoomValidator) (*httptest.Server, *Hub) {
+func newHandlerTestServer(t *testing.T, validateRoom RoomValidator) (*httptest.Server, *Hub, *SessionStore) {
 	t.Helper()
 	hub := NewHub(nil)
-	handler := NewHandler(hub, validateRoom)
-	return httptest.NewServer(handler), hub
+	sessions := NewSessionStore(30 * time.Second)
+	handler := NewHandler(hub, validateRoom, sessions)
+	return httptest.NewServer(handler), hub, sessions
 }
 
 func dialAndJoin(t *testing.T, url, roomID, username string) *websocket.Conn {
@@ -31,11 +32,19 @@ func dialAndJoin(t *testing.T, url, roomID, username string) *websocket.Conn {
 	if err := conn.Write(ctx, websocket.MessageText, env); err != nil {
 		t.Fatalf("write join error: %v", err)
 	}
+
+	// Drain the session response envelope.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	if _, _, err := conn.Read(readCtx); err != nil {
+		t.Fatalf("read session response error: %v", err)
+	}
+
 	return conn
 }
 
 func TestHandlerJoinAndChat(t *testing.T) {
-	ts, hub := newHandlerTestServer(t, nil)
+	ts, hub, _ := newHandlerTestServer(t, nil)
 	defer ts.Close()
 
 	// Connect two clients to the same room.
@@ -97,7 +106,7 @@ func TestHandlerJoinAndChat(t *testing.T) {
 }
 
 func TestHandlerJoinInvalidRoom(t *testing.T) {
-	ts, _ := newHandlerTestServer(t, func(roomID string) bool {
+	ts, _, _ := newHandlerTestServer(t, func(roomID string) bool {
 		return roomID == "valid-room"
 	})
 	defer ts.Close()
@@ -131,7 +140,7 @@ func TestHandlerJoinInvalidRoom(t *testing.T) {
 }
 
 func TestHandlerJoinMissingRoomID(t *testing.T) {
-	ts, _ := newHandlerTestServer(t, nil)
+	ts, _, _ := newHandlerTestServer(t, nil)
 	defer ts.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -163,7 +172,7 @@ func TestHandlerJoinMissingRoomID(t *testing.T) {
 }
 
 func TestHandlerDefaultUsername(t *testing.T) {
-	ts, hub := newHandlerTestServer(t, nil)
+	ts, hub, _ := newHandlerTestServer(t, nil)
 	defer ts.Close()
 
 	// Join without a username.
@@ -190,6 +199,191 @@ func TestHandlerDefaultUsername(t *testing.T) {
 
 	if !strings.HasPrefix(msg.Username, "anon-") {
 		t.Errorf("expected username to start with 'anon-', got %q", msg.Username)
+	}
+}
+
+// dialJoinAndReadSession connects, sends a join, and reads back the session envelope.
+func dialJoinAndReadSession(t *testing.T, url, roomID, username, sessionID string) (*websocket.Conn, SessionPayload) {
+	t.Helper()
+	conn := dialWS(t, url)
+
+	payload, _ := json.Marshal(JoinPayload{RoomID: roomID, Username: username, SessionID: sessionID})
+	env, _ := json.Marshal(Envelope{Type: "join", Payload: payload})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, env); err != nil {
+		t.Fatalf("write join error: %v", err)
+	}
+
+	// Read the session response.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read session response error: %v", err)
+	}
+
+	var sessEnv Envelope
+	if err := json.Unmarshal(data, &sessEnv); err != nil {
+		t.Fatalf("unmarshal session envelope error: %v", err)
+	}
+	if sessEnv.Type != "session" {
+		t.Fatalf("expected type 'session', got %q", sessEnv.Type)
+	}
+
+	var sp SessionPayload
+	if err := json.Unmarshal(sessEnv.Payload, &sp); err != nil {
+		t.Fatalf("unmarshal session payload error: %v", err)
+	}
+	return conn, sp
+}
+
+func TestHandlerSessionResumption(t *testing.T) {
+	ts, hub, sessions := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// 1. Connect and get a session ID.
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	if sp1.Resumed {
+		t.Fatal("first connection should not be resumed")
+	}
+	if sp1.SessionID == "" {
+		t.Fatal("expected a session ID")
+	}
+	if sp1.Username != "alice" {
+		t.Errorf("expected username 'alice', got %q", sp1.Username)
+	}
+
+	// Wait for client to be registered.
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Drain the "alice joined" system message.
+	drainSystemMessages(t, conn1, 1)
+
+	// 2. Disconnect the first client.
+	conn1.Close(websocket.StatusNormalClosure, "")
+
+	// Wait for client to be removed.
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Session should be marked disconnected but still exist.
+	if sessions.Count() == 0 {
+		t.Fatal("session should still exist after disconnect")
+	}
+
+	// 3. Reconnect with the same session ID — should resume.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "", sp1.SessionID)
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	if !sp2.Resumed {
+		t.Fatal("reconnection should have resumed the session")
+	}
+	if sp2.SessionID != sp1.SessionID {
+		t.Errorf("expected same session ID %q, got %q", sp1.SessionID, sp2.SessionID)
+	}
+	if sp2.UserID != sp1.UserID {
+		t.Errorf("expected same user ID %q, got %q", sp1.UserID, sp2.UserID)
+	}
+	if sp2.Username != "alice" {
+		t.Errorf("expected username 'alice' preserved, got %q", sp2.Username)
+	}
+
+	// Wait for client to be registered.
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// No "joined" system message should have been broadcast for a resumed session.
+	// Verify by sending a chat and confirming the next message is the chat, not a system message.
+	chatPayload, _ := json.Marshal(ChatPayload{Content: "I'm back"})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn2.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write chat error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn2.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read chat error: %v", err)
+	}
+
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if env.Type != string(message.TypeChat) {
+		t.Errorf("expected first message after resume to be 'chat', got %q (should not get 'joined' system message)", env.Type)
+	}
+}
+
+func TestHandlerSessionResumptionWrongRoom(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Connect to room1.
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Disconnect.
+	conn1.Close(websocket.StatusNormalClosure, "")
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Try to resume in room2 — should create a new session.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room2", "alice", sp1.SessionID)
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	if sp2.Resumed {
+		t.Fatal("should not resume session in a different room")
+	}
+	if sp2.SessionID == sp1.SessionID {
+		t.Error("should have created a new session")
+	}
+}
+
+func TestHandlerSessionResumptionExpired(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(50 * time.Millisecond) // Very short TTL for testing.
+	handler := NewHandler(hub, nil, sessions)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// Connect and get session.
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	drainSystemMessages(t, conn1, 1)
+
+	// Disconnect.
+	conn1.Close(websocket.StatusNormalClosure, "")
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Wait for session to expire (TTL=50ms, reap runs every 25ms).
+	time.Sleep(150 * time.Millisecond)
+
+	// Try to resume — should fail because session expired.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", sp1.SessionID)
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	if sp2.Resumed {
+		t.Fatal("should not resume an expired session")
+	}
+	if sp2.SessionID == sp1.SessionID {
+		t.Error("should have created a new session for expired session")
 	}
 }
 
