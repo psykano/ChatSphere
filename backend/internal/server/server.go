@@ -44,6 +44,7 @@ func (s *Server) Run() error {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/rooms", s.handleListRooms)
+	s.mux.HandleFunc("GET /api/rooms/code/{code}", s.handleGetRoomByCode)
 	s.mux.HandleFunc("POST /api/rooms", s.handleCreateRoom)
 
 	sessions := ws.NewSessionStore(2 * time.Minute)
@@ -65,6 +66,23 @@ func (s *Server) handleListRooms(w http.ResponseWriter, r *http.Request) {
 	rooms := s.rooms.List()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(rooms)
+}
+
+func (s *Server) handleGetRoomByCode(w http.ResponseWriter, r *http.Request) {
+	code := strings.ToUpper(strings.TrimSpace(r.PathValue("code")))
+	if len(code) != 6 {
+		http.Error(w, `{"error":"code must be 6 characters"}`, http.StatusBadRequest)
+		return
+	}
+
+	rm := s.rooms.GetByCode(code)
+	if rm == nil {
+		http.Error(w, `{"error":"room not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(rm)
 }
 
 type createRoomRequest struct {

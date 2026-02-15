@@ -155,6 +155,71 @@ func TestCreateRoomAppearsInList(t *testing.T) {
 	}
 }
 
+func TestGetRoomByCode(t *testing.T) {
+	srv := New(":0")
+
+	w := postJSON(srv, `{"name":"Secret","capacity":10,"public":false}`)
+	var created map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&created)
+	code := created["code"].(string)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms/code/"+code, nil)
+	w = httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var room map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&room)
+	if room["id"] != created["id"] {
+		t.Errorf("expected room ID %v, got %v", created["id"], room["id"])
+	}
+}
+
+func TestGetRoomByCodeNotFound(t *testing.T) {
+	srv := New(":0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms/code/ZZZZZZ", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", w.Code)
+	}
+}
+
+func TestGetRoomByCodeInvalidLength(t *testing.T) {
+	srv := New(":0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms/code/AB", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", w.Code)
+	}
+}
+
+func TestGetRoomByCodeCaseInsensitive(t *testing.T) {
+	srv := New(":0")
+
+	w := postJSON(srv, `{"name":"Secret","capacity":10,"public":false}`)
+	var created map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&created)
+	code := created["code"].(string)
+	lowerCode := strings.ToLower(code)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/rooms/code/"+lowerCode, nil)
+	w = httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for lowercase code, got %d", w.Code)
+	}
+}
+
 func TestCreateRoomMissingName(t *testing.T) {
 	srv := New(":0")
 

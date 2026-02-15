@@ -104,6 +104,41 @@ func TestManagerDelete(t *testing.T) {
 	}
 }
 
+func TestManagerGetByCode(t *testing.T) {
+	m := NewManager()
+	priv := m.Create("secret", "", "user1", 10, false)
+	m.Create("public", "", "user1", 50, true)
+
+	got := m.GetByCode(priv.Code)
+	if got == nil {
+		t.Fatal("expected to find private room by code")
+	}
+	if got.ID != priv.ID {
+		t.Errorf("expected room ID %q, got %q", priv.ID, got.ID)
+	}
+}
+
+func TestManagerGetByCodeNotFound(t *testing.T) {
+	m := NewManager()
+	m.Create("secret", "", "user1", 10, false)
+
+	if m.GetByCode("ZZZZZZ") != nil {
+		t.Error("expected nil for non-matching code")
+	}
+}
+
+func TestManagerUniqueCodeNoDuplicates(t *testing.T) {
+	m := NewManager()
+	seen := make(map[string]bool)
+	for i := 0; i < 50; i++ {
+		r := m.Create("room", "", "user1", 10, false)
+		if seen[r.Code] {
+			t.Fatalf("duplicate code %q generated", r.Code)
+		}
+		seen[r.Code] = true
+	}
+}
+
 func TestGenerateCode(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < 100; i++ {

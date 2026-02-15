@@ -46,6 +46,24 @@ func generateCode() string {
 	return string(b)
 }
 
+// uniqueCode generates a code that doesn't collide with existing rooms.
+// Must be called while holding mu.
+func (m *Manager) uniqueCode() string {
+	for {
+		code := generateCode()
+		taken := false
+		for _, r := range m.rooms {
+			if r.Code == code {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			return code
+		}
+	}
+}
+
 // Manager manages chat rooms.
 type Manager struct {
 	mu    sync.RWMutex
@@ -70,11 +88,10 @@ func (m *Manager) Create(name, description, creatorID string, capacity int, publ
 		CreatorID:   creatorID,
 		CreatedAt:   time.Now(),
 	}
-	if !public {
-		r.Code = generateCode()
-	}
-
 	m.mu.Lock()
+	if !public {
+		r.Code = m.uniqueCode()
+	}
 	m.rooms[r.ID] = r
 	m.mu.Unlock()
 
@@ -86,6 +103,18 @@ func (m *Manager) Get(id string) *Room {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.rooms[id]
+}
+
+// GetByCode returns a private room matching the given code, or nil if not found.
+func (m *Manager) GetByCode(code string) *Room {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, r := range m.rooms {
+		if !r.Public && r.Code == code {
+			return r
+		}
+	}
+	return nil
 }
 
 // List returns all public rooms sorted by active user count (descending).
