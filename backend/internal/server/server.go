@@ -1,7 +1,10 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -74,9 +77,37 @@ func (s *Server) routes() {
 	}, sessions, messages)
 	s.mux.Handle("GET /ws", wsHandler)
 
-	s.rooms.StartExpiration(2*time.Hour, 15*time.Minute, func(roomID string) {
-		s.hub.DisconnectRoom(roomID)
-		messages.DeleteRoom(roomID)
+	s.rooms.StartExpiration(room.ExpirationConfig{
+		MsgTTL:   2 * time.Hour,
+		EmptyTTL: 15 * time.Minute,
+		MsgWarn:  5 * time.Minute,
+		EmptyWarn: 2 * time.Minute,
+		OnExpire: func(roomID string) {
+			s.hub.DisconnectRoom(roomID)
+			messages.DeleteRoom(roomID)
+		},
+		OnWarn: func(roomID string, reason room.WarningReason, remaining time.Duration) {
+			mins := int(remaining.Minutes())
+			if mins < 1 {
+				mins = 1
+			}
+			var content string
+			switch reason {
+			case room.WarnMsgInactive:
+				content = fmt.Sprintf("This room will expire in %d minutes due to inactivity", mins)
+			case room.WarnEmpty:
+				content = fmt.Sprintf("This room will expire in %d minutes because it is empty", mins)
+			}
+			b := make([]byte, 16)
+			rand.Read(b)
+			s.hub.Broadcast(roomID, &message.Message{
+				ID:        hex.EncodeToString(b),
+				RoomID:    roomID,
+				Content:   content,
+				Type:      message.TypeSystem,
+				CreatedAt: time.Now(),
+			})
+		},
 	})
 }
 

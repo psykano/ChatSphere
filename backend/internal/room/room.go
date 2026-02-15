@@ -24,6 +24,8 @@ type Room struct {
 	mu             sync.Mutex
 	lastMessageAt  time.Time
 	lastUserLeftAt time.Time
+	msgWarnSent    bool
+	emptyWarnSent  bool
 }
 
 // AddActiveUsers atomically adjusts the active user count and syncs it
@@ -41,6 +43,7 @@ func (r *Room) IsFull() bool {
 func (r *Room) TouchMessage() {
 	r.mu.Lock()
 	r.lastMessageAt = time.Now()
+	r.msgWarnSent = false
 	r.mu.Unlock()
 }
 
@@ -55,7 +58,48 @@ func (r *Room) TouchUserLeft() {
 func (r *Room) ClearUserLeft() {
 	r.mu.Lock()
 	r.lastUserLeftAt = time.Time{}
+	r.emptyWarnSent = false
 	r.mu.Unlock()
+}
+
+// WarningReason describes why a room is about to expire.
+type WarningReason int
+
+const (
+	WarnNone         WarningReason = iota
+	WarnMsgInactive                // Room will expire due to message inactivity.
+	WarnEmpty                      // Room will expire because it is empty.
+)
+
+// NeedsWarning reports whether the room is approaching expiration and a
+// warning should be sent. It returns the reason and the time remaining
+// until expiration. Each warning is sent at most once; the flag resets
+// when activity resumes (new message or user join).
+func (r *Room) NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn time.Duration, now time.Time) (WarningReason, time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Check empty-room warning first (shorter TTL, more urgent).
+	if !r.lastUserLeftAt.IsZero() && !r.emptyWarnSent {
+		elapsed := now.Sub(r.lastUserLeftAt)
+		remaining := emptyTTL - elapsed
+		if remaining <= emptyWarn && remaining > 0 {
+			r.emptyWarnSent = true
+			return WarnEmpty, remaining
+		}
+	}
+
+	// Check message inactivity warning.
+	if !r.lastMessageAt.IsZero() && !r.msgWarnSent {
+		elapsed := now.Sub(r.lastMessageAt)
+		remaining := msgTTL - elapsed
+		if remaining <= msgWarn && remaining > 0 {
+			r.msgWarnSent = true
+			return WarnMsgInactive, remaining
+		}
+	}
+
+	return WarnNone, 0
 }
 
 // Expired reports whether the room should be reaped based on inactivity.
@@ -124,7 +168,10 @@ type Manager struct {
 
 	msgTTL   time.Duration
 	emptyTTL time.Duration
+	msgWarn  time.Duration
+	emptyWarn time.Duration
 	onExpire func(roomID string)
+	onWarn   func(roomID string, reason WarningReason, remaining time.Duration)
 }
 
 // NewManager creates a new room Manager.
@@ -134,14 +181,24 @@ func NewManager() *Manager {
 	}
 }
 
+// ExpirationConfig holds parameters for room expiration and warnings.
+type ExpirationConfig struct {
+	MsgTTL   time.Duration // How long without messages before expiring.
+	EmptyTTL time.Duration // How long empty before expiring.
+	MsgWarn  time.Duration // Warning window before message-inactivity expiration.
+	EmptyWarn time.Duration // Warning window before empty-room expiration.
+	OnExpire func(roomID string)
+	OnWarn   func(roomID string, reason WarningReason, remaining time.Duration)
+}
+
 // StartExpiration begins a background goroutine that reaps expired rooms.
-// msgTTL is how long a room can go without messages before expiring.
-// emptyTTL is how long a room can be empty before expiring.
-// onExpire is called for each expired room (with the room ID) to allow cleanup.
-func (m *Manager) StartExpiration(msgTTL, emptyTTL time.Duration, onExpire func(roomID string)) {
-	m.msgTTL = msgTTL
-	m.emptyTTL = emptyTTL
-	m.onExpire = onExpire
+func (m *Manager) StartExpiration(cfg ExpirationConfig) {
+	m.msgTTL = cfg.MsgTTL
+	m.emptyTTL = cfg.EmptyTTL
+	m.msgWarn = cfg.MsgWarn
+	m.emptyWarn = cfg.EmptyWarn
+	m.onExpire = cfg.OnExpire
+	m.onWarn = cfg.OnWarn
 	go m.reapLoop()
 }
 
@@ -157,16 +214,33 @@ func (m *Manager) reapLoop() {
 	}
 }
 
+type roomWarning struct {
+	id        string
+	reason    WarningReason
+	remaining time.Duration
+}
+
 func (m *Manager) reap() {
 	now := time.Now()
 	m.mu.RLock()
 	var expired []string
+	var warnings []roomWarning
 	for id, r := range m.rooms {
 		if r.Expired(m.msgTTL, m.emptyTTL, now) {
 			expired = append(expired, id)
+			continue
+		}
+		if reason, remaining := r.NeedsWarning(m.msgTTL, m.msgWarn, m.emptyTTL, m.emptyWarn, now); reason != WarnNone {
+			warnings = append(warnings, roomWarning{id, reason, remaining})
 		}
 	}
 	m.mu.RUnlock()
+
+	for _, w := range warnings {
+		if m.onWarn != nil {
+			m.onWarn(w.id, w.reason, w.remaining)
+		}
+	}
 
 	for _, id := range expired {
 		if m.onExpire != nil {

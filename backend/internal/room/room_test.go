@@ -341,8 +341,12 @@ func TestManagerStartExpirationReapsOverTime(t *testing.T) {
 	var expired atomic.Int32
 	// Use 1ms TTLs — the room's lastMessageAt is 1h ago, well past 1ms.
 	// The reap interval is max(ttl/2, 1s) = 1s, so we need to wait >1s.
-	m.StartExpiration(time.Millisecond, time.Millisecond, func(roomID string) {
-		expired.Add(1)
+	m.StartExpiration(ExpirationConfig{
+		MsgTTL:   time.Millisecond,
+		EmptyTTL: time.Millisecond,
+		OnExpire: func(roomID string) {
+			expired.Add(1)
+		},
 	})
 
 	// Wait for at least one reap cycle (interval is 1s minimum).
@@ -370,5 +374,248 @@ func TestCreateRoomInitializesLastMessageAt(t *testing.T) {
 
 	if lastMsg.Before(before) {
 		t.Error("lastMessageAt should be set to creation time")
+	}
+}
+
+func TestNeedsWarningMessageInactivity(t *testing.T) {
+	m := NewManager()
+	r := m.Create("test", "", "user1", 50, true)
+
+	msgTTL := 2 * time.Hour
+	msgWarn := 5 * time.Minute
+	emptyTTL := 15 * time.Minute
+	emptyWarn := 2 * time.Minute
+
+	// Room just created — no warning yet.
+	reason, _ := r.NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn, time.Now())
+	if reason != WarnNone {
+		t.Errorf("new room should not need warning, got %d", reason)
+	}
+
+	// Simulate 1h55m since last message (5 minutes remaining = within warning window).
+	r.mu.Lock()
+	r.lastMessageAt = time.Now().Add(-1*time.Hour - 55*time.Minute)
+	r.mu.Unlock()
+
+	reason, remaining := r.NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn, time.Now())
+	if reason != WarnMsgInactive {
+		t.Errorf("expected WarnMsgInactive, got %d", reason)
+	}
+	if remaining > 5*time.Minute || remaining < 4*time.Minute {
+		t.Errorf("expected ~5min remaining, got %v", remaining)
+	}
+}
+
+func TestNeedsWarningEmptyRoom(t *testing.T) {
+	m := NewManager()
+	r := m.Create("test", "", "user1", 50, true)
+
+	msgTTL := 2 * time.Hour
+	msgWarn := 5 * time.Minute
+	emptyTTL := 15 * time.Minute
+	emptyWarn := 2 * time.Minute
+
+	// Room became empty 13.5 minutes ago (1.5 min remaining = within 2min warning).
+	r.mu.Lock()
+	r.lastUserLeftAt = time.Now().Add(-13*time.Minute - 30*time.Second)
+	r.mu.Unlock()
+
+	reason, remaining := r.NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn, time.Now())
+	if reason != WarnEmpty {
+		t.Errorf("expected WarnEmpty, got %d", reason)
+	}
+	if remaining > 2*time.Minute || remaining < 1*time.Minute {
+		t.Errorf("expected ~1.5min remaining, got %v", remaining)
+	}
+}
+
+func TestNeedsWarningOnlySentOnce(t *testing.T) {
+	m := NewManager()
+	r := m.Create("test", "", "user1", 50, true)
+
+	msgTTL := 2 * time.Hour
+	msgWarn := 5 * time.Minute
+	emptyTTL := 15 * time.Minute
+	emptyWarn := 2 * time.Minute
+
+	// Put room in warning window for message inactivity.
+	r.mu.Lock()
+	r.lastMessageAt = time.Now().Add(-1*time.Hour - 56*time.Minute)
+	r.mu.Unlock()
+
+	// First check: should warn.
+	reason, _ := r.NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn, time.Now())
+	if reason != WarnMsgInactive {
+		t.Fatalf("expected WarnMsgInactive, got %d", reason)
+	}
+
+	// Second check: should not warn again.
+	reason, _ = r.NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn, time.Now())
+	if reason != WarnNone {
+		t.Errorf("expected WarnNone on second call, got %d", reason)
+	}
+}
+
+func TestNeedsWarningResetOnActivity(t *testing.T) {
+	m := NewManager()
+	r := m.Create("test", "", "user1", 50, true)
+
+	msgTTL := 2 * time.Hour
+	msgWarn := 5 * time.Minute
+	emptyTTL := 15 * time.Minute
+	emptyWarn := 2 * time.Minute
+
+	// Trigger message inactivity warning.
+	r.mu.Lock()
+	r.lastMessageAt = time.Now().Add(-1*time.Hour - 56*time.Minute)
+	r.mu.Unlock()
+
+	reason, _ := r.NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn, time.Now())
+	if reason != WarnMsgInactive {
+		t.Fatalf("expected initial warning")
+	}
+
+	// New message resets the flag.
+	r.TouchMessage()
+
+	// Put room back in warning window.
+	r.mu.Lock()
+	r.lastMessageAt = time.Now().Add(-1*time.Hour - 57*time.Minute)
+	r.mu.Unlock()
+
+	reason, _ = r.NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn, time.Now())
+	if reason != WarnMsgInactive {
+		t.Errorf("expected warning again after TouchMessage reset, got %d", reason)
+	}
+}
+
+func TestNeedsWarningEmptyResetOnJoin(t *testing.T) {
+	m := NewManager()
+	r := m.Create("test", "", "user1", 50, true)
+
+	msgTTL := 2 * time.Hour
+	msgWarn := 5 * time.Minute
+	emptyTTL := 15 * time.Minute
+	emptyWarn := 2 * time.Minute
+
+	// Trigger empty-room warning.
+	r.mu.Lock()
+	r.lastUserLeftAt = time.Now().Add(-13*time.Minute - 30*time.Second)
+	r.mu.Unlock()
+
+	reason, _ := r.NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn, time.Now())
+	if reason != WarnEmpty {
+		t.Fatalf("expected WarnEmpty, got %d", reason)
+	}
+
+	// User joins, resetting the flag.
+	r.ClearUserLeft()
+
+	// Room becomes empty again and approaches expiration.
+	r.mu.Lock()
+	r.lastUserLeftAt = time.Now().Add(-14 * time.Minute)
+	r.mu.Unlock()
+
+	reason, _ = r.NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn, time.Now())
+	if reason != WarnEmpty {
+		t.Errorf("expected WarnEmpty again after ClearUserLeft reset, got %d", reason)
+	}
+}
+
+func TestNeedsWarningNotInWindow(t *testing.T) {
+	m := NewManager()
+	r := m.Create("test", "", "user1", 50, true)
+
+	msgTTL := 2 * time.Hour
+	msgWarn := 5 * time.Minute
+	emptyTTL := 15 * time.Minute
+	emptyWarn := 2 * time.Minute
+
+	// Last message was 1h ago — 1h remaining, well outside warning window.
+	r.mu.Lock()
+	r.lastMessageAt = time.Now().Add(-1 * time.Hour)
+	r.mu.Unlock()
+
+	reason, _ := r.NeedsWarning(msgTTL, msgWarn, emptyTTL, emptyWarn, time.Now())
+	if reason != WarnNone {
+		t.Errorf("room far from expiration should not need warning, got %d", reason)
+	}
+}
+
+func TestManagerReapSendsWarnings(t *testing.T) {
+	m := NewManager()
+	r := m.Create("approaching", "", "user1", 50, true)
+
+	m.msgTTL = 2 * time.Hour
+	m.emptyTTL = 15 * time.Minute
+	m.msgWarn = 5 * time.Minute
+	m.emptyWarn = 2 * time.Minute
+
+	// Set last message to 1h56m ago — within 5min warning window but not expired.
+	r.mu.Lock()
+	r.lastMessageAt = time.Now().Add(-1*time.Hour - 56*time.Minute)
+	r.mu.Unlock()
+
+	var warned []string
+	m.onWarn = func(roomID string, reason WarningReason, remaining time.Duration) {
+		warned = append(warned, roomID)
+	}
+
+	m.reap()
+
+	if len(warned) != 1 || warned[0] != r.ID {
+		t.Errorf("expected warning for room %q, got %v", r.ID, warned)
+	}
+	// Room should still exist.
+	if m.Get(r.ID) == nil {
+		t.Error("room should not be deleted after warning")
+	}
+}
+
+func TestManagerReapWarnsBeforeExpiring(t *testing.T) {
+	m := NewManager()
+	active := m.Create("active", "", "user1", 50, true)
+	approaching := m.Create("approaching", "", "user1", 50, true)
+	stale := m.Create("stale", "", "user1", 50, true)
+
+	m.msgTTL = 2 * time.Hour
+	m.emptyTTL = 15 * time.Minute
+	m.msgWarn = 5 * time.Minute
+	m.emptyWarn = 2 * time.Minute
+
+	// "approaching" is in warning window (4 min remaining).
+	approaching.mu.Lock()
+	approaching.lastMessageAt = time.Now().Add(-1*time.Hour - 56*time.Minute)
+	approaching.mu.Unlock()
+
+	// "stale" is fully expired (3h since last message).
+	stale.mu.Lock()
+	stale.lastMessageAt = time.Now().Add(-3 * time.Hour)
+	stale.mu.Unlock()
+
+	var warned, expired []string
+	m.onWarn = func(roomID string, reason WarningReason, remaining time.Duration) {
+		warned = append(warned, roomID)
+	}
+	m.onExpire = func(roomID string) {
+		expired = append(expired, roomID)
+	}
+
+	m.reap()
+
+	if m.Get(active.ID) == nil {
+		t.Error("active room should still exist")
+	}
+	if m.Get(approaching.ID) == nil {
+		t.Error("approaching room should still exist (only warned)")
+	}
+	if m.Get(stale.ID) != nil {
+		t.Error("stale room should be deleted")
+	}
+	if len(warned) != 1 || warned[0] != approaching.ID {
+		t.Errorf("expected warning for approaching room, got %v", warned)
+	}
+	if len(expired) != 1 || expired[0] != stale.ID {
+		t.Errorf("expected expiration for stale room, got %v", expired)
 	}
 }
