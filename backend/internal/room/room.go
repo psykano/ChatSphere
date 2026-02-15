@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,7 +18,14 @@ type Room struct {
 	Code        string    `json:"code,omitempty"`
 	CreatorID   string    `json:"creator_id"`
 	CreatedAt   time.Time `json:"created_at"`
-	ActiveUsers int       `json:"active_users"`
+	activeUsers atomic.Int32
+	ActiveUsers int `json:"active_users"`
+}
+
+// AddActiveUsers atomically adjusts the active user count and syncs it
+// to the exported field for JSON serialization.
+func (r *Room) AddActiveUsers(delta int) {
+	r.ActiveUsers = int(r.activeUsers.Add(int32(delta)))
 }
 
 // generateID returns a random hex ID.
