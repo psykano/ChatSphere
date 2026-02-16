@@ -126,7 +126,7 @@ export class ReconnectingWS {
         return;
       }
 
-      if (envelope.type === "backfill") {
+      if (envelope.type === "history" || envelope.type === "backfill") {
         const messages = envelope.payload as BackfillMessage[];
         for (const msg of messages) {
           this.opts.onMessage?.({ type: msg.type, payload: msg });

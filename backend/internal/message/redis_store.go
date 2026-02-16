@@ -82,6 +82,32 @@ func (s *RedisStore) After(roomID, afterID string) []*Message {
 	return nil
 }
 
+// Recent returns the last n messages for a room.
+func (s *RedisStore) Recent(roomID string, n int) []*Message {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	vals, err := s.client.LRange(ctx, redisKey(roomID), int64(-n), -1).Result()
+	if err != nil {
+		log.Printf("redis: failed to read recent messages: %v", err)
+		return nil
+	}
+
+	if len(vals) == 0 {
+		return nil
+	}
+
+	msgs := make([]*Message, 0, len(vals))
+	for _, v := range vals {
+		var m Message
+		if err := json.Unmarshal([]byte(v), &m); err != nil {
+			continue
+		}
+		msgs = append(msgs, &m)
+	}
+	return msgs
+}
+
 // DeleteRoom removes all stored messages for a room.
 func (s *RedisStore) DeleteRoom(roomID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

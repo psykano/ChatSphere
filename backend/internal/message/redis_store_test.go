@@ -177,6 +177,45 @@ func TestRedisStorePreservesMessageFields(t *testing.T) {
 	}
 }
 
+func TestRedisStoreRecentReturnsLastN(t *testing.T) {
+	s, _ := newTestRedisStore(t, 100)
+	s.Append(redisMsg("a", "room1", "first"))
+	s.Append(redisMsg("b", "room1", "second"))
+	s.Append(redisMsg("c", "room1", "third"))
+	s.Append(redisMsg("d", "room1", "fourth"))
+
+	result := s.Recent("room1", 2)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	if result[0].ID != "c" || result[1].ID != "d" {
+		t.Errorf("expected IDs [c, d], got [%s, %s]", result[0].ID, result[1].ID)
+	}
+}
+
+func TestRedisStoreRecentFewerThanN(t *testing.T) {
+	s, _ := newTestRedisStore(t, 100)
+	s.Append(redisMsg("a", "room1", "first"))
+	s.Append(redisMsg("b", "room1", "second"))
+
+	result := s.Recent("room1", 10)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	if result[0].ID != "a" || result[1].ID != "b" {
+		t.Errorf("expected IDs [a, b], got [%s, %s]", result[0].ID, result[1].ID)
+	}
+}
+
+func TestRedisStoreRecentEmptyRoom(t *testing.T) {
+	s, _ := newTestRedisStore(t, 100)
+
+	result := s.Recent("room1", 10)
+	if result != nil {
+		t.Fatalf("expected nil for empty room, got %d messages", len(result))
+	}
+}
+
 func TestRedisStoreDeleteRoomNonExistent(t *testing.T) {
 	s, _ := newTestRedisStore(t, 100)
 	// Should not panic or error.

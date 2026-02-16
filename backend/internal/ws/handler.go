@@ -159,9 +159,11 @@ func (h *Handler) handleJoin(ctx context.Context, client *Client) bool {
 	// Send session info back to client.
 	h.sendSessionInfo(ctx, client, resumed)
 
-	// Send missed messages on session resumption.
+	// Send missed messages on session resumption, or recent history for new joins.
 	if resumed {
 		h.sendBackfill(ctx, client)
+	} else {
+		h.sendHistory(ctx, client)
 	}
 
 	return true
@@ -229,6 +231,40 @@ func (h *Handler) sendBackfill(ctx context.Context, client *Client) {
 	// Update last message ID to the last backfilled message.
 	last := missed[len(missed)-1]
 	h.sessions.SetLastMessageID(client.sessionID, last.ID)
+}
+
+// historyLimit is the number of recent messages to send on room join.
+const historyLimit = 50
+
+// sendHistory sends recent message history to a newly joined client.
+// An empty history envelope is always sent so clients can rely on
+// receiving it as part of the join handshake.
+func (h *Handler) sendHistory(ctx context.Context, client *Client) {
+	var recent []*message.Message
+	if h.messages != nil {
+		recent = h.messages.Recent(client.roomID, historyLimit)
+	}
+	if recent == nil {
+		recent = []*message.Message{}
+	}
+
+	data, err := json.Marshal(recent)
+	if err != nil {
+		log.Printf("ws: failed to marshal history: %v", err)
+		return
+	}
+
+	env, err := json.Marshal(Envelope{Type: "history", Payload: data})
+	if err != nil {
+		log.Printf("ws: failed to marshal history envelope: %v", err)
+		return
+	}
+
+	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	if err := client.conn.Write(writeCtx, websocket.MessageText, env); err != nil {
+		log.Printf("ws: failed to write history: %v", err)
+	}
 }
 
 // readLoop reads messages from the client until the connection closes

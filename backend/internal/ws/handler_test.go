@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -25,22 +26,13 @@ func newHandlerTestServer(t *testing.T, validateRoom RoomValidator) (*httptest.S
 
 func dialAndJoin(t *testing.T, url, roomID, username string) *websocket.Conn {
 	t.Helper()
-	conn := dialWS(t, url)
+	conn, _ := dialJoinAndReadSession(t, url, roomID, username, "")
 
-	payload, _ := json.Marshal(JoinPayload{RoomID: roomID, Username: username})
-	env, _ := json.Marshal(Envelope{Type: "join", Payload: payload})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := conn.Write(ctx, websocket.MessageText, env); err != nil {
-		t.Fatalf("write join error: %v", err)
-	}
-
-	// Drain the session response envelope.
+	// Drain the history envelope (always sent during join handshake).
 	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer readCancel()
 	if _, _, err := conn.Read(readCtx); err != nil {
-		t.Fatalf("read session response error: %v", err)
+		t.Fatalf("read history response error: %v", err)
 	}
 
 	return conn
@@ -267,8 +259,8 @@ func TestHandlerSessionResumption(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Drain the "alice joined" system message.
-	drainSystemMessages(t, conn1, 1)
+	// Drain history + "alice joined" system message.
+	drainSystemMessages(t, conn1, 2)
 
 	// 2. Disconnect the first client.
 	conn1.Close(websocket.StatusNormalClosure, "")
@@ -343,7 +335,7 @@ func TestHandlerSessionResumptionWrongRoom(t *testing.T) {
 
 	// Connect to room1.
 	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
-	drainSystemMessages(t, conn1, 1) // "alice joined"
+	drainSystemMessages(t, conn1, 2) // history + "alice joined"
 
 	// Disconnect.
 	conn1.Close(websocket.StatusNormalClosure, "")
@@ -352,7 +344,7 @@ func TestHandlerSessionResumptionWrongRoom(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Try to resume in room2 — should create a new session.
+	// Try to resume in room2 — should create a new session (not resumed).
 	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room2", "alice", sp1.SessionID)
 	defer conn2.Close(websocket.StatusNormalClosure, "")
 
@@ -376,7 +368,7 @@ func TestHandlerSessionResumptionExpired(t *testing.T) {
 
 	// Connect and get session.
 	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
-	drainSystemMessages(t, conn1, 1)
+	drainSystemMessages(t, conn1, 2) // history + "alice joined"
 
 	// Disconnect.
 	conn1.Close(websocket.StatusNormalClosure, "")
@@ -388,7 +380,7 @@ func TestHandlerSessionResumptionExpired(t *testing.T) {
 	// Wait for session to expire (TTL=50ms, reap runs every 25ms).
 	time.Sleep(150 * time.Millisecond)
 
-	// Try to resume — should fail because session expired.
+	// Try to resume — should fail because session expired (creates new session).
 	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", sp1.SessionID)
 	defer conn2.Close(websocket.StatusNormalClosure, "")
 
@@ -421,8 +413,8 @@ func TestHandlerBackfillOnReconnect(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Drain system messages (alice joined, bob joined) from both connections.
-	drainSystemMessages(t, conn1, 2) // "alice joined" + "bob joined"
+	// Drain history + system messages from conn1 (history, alice joined, bob joined).
+	drainSystemMessages(t, conn1, 3)
 	drainSystemMessages(t, conn2, 1) // "bob joined"
 
 	// 2. Alice disconnects.
@@ -501,7 +493,7 @@ func TestHandlerBackfillOnReconnect(t *testing.T) {
 	}
 }
 
-func TestHandlerNoBackfillForNewConnection(t *testing.T) {
+func TestHandlerHistoryOnNewConnection(t *testing.T) {
 	ts, hub, _ := newHandlerTestServer(t, nil)
 	defer ts.Close()
 
@@ -520,17 +512,13 @@ func TestHandlerNoBackfillForNewConnection(t *testing.T) {
 	conn1.Write(ctx, websocket.MessageText, chatEnv)
 	drainSystemMessages(t, conn1, 1) // the chat message
 
-	// New client joins — should NOT receive backfill (only new connections get session, not backfill).
-	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	// New client joins — should receive history with existing messages.
+	// Use dialJoinAndReadSession so we can inspect the history envelope directly.
+	conn2, _ := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
 	defer conn2.Close(websocket.StatusNormalClosure, "")
 	defer conn1.Close(websocket.StatusNormalClosure, "")
 
-	deadline = time.Now().Add(2 * time.Second)
-	for hub.ClientCount("room1") < 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Bob should get "bob joined" system message, not a backfill.
+	// Read the history envelope (sent right after session during join).
 	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer readCancel()
 	_, data, err := conn2.Read(readCtx)
@@ -542,8 +530,27 @@ func TestHandlerNoBackfillForNewConnection(t *testing.T) {
 	if err := json.Unmarshal(data, &env); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}
-	if env.Type == "backfill" {
-		t.Error("new connections should not receive backfill")
+	if env.Type != "history" {
+		t.Fatalf("expected type 'history', got %q", env.Type)
+	}
+
+	var historyMsgs []message.Message
+	if err := json.Unmarshal(env.Payload, &historyMsgs); err != nil {
+		t.Fatalf("unmarshal history messages error: %v", err)
+	}
+
+	// Should contain "alice joined" system message and "hello" chat message.
+	if len(historyMsgs) < 1 {
+		t.Fatal("expected at least 1 history message")
+	}
+
+	// The last message should be the "hello" chat.
+	last := historyMsgs[len(historyMsgs)-1]
+	if last.Content != "hello" {
+		t.Errorf("expected last history message to be 'hello', got %q", last.Content)
+	}
+	if last.Type != message.TypeChat {
+		t.Errorf("expected type 'chat', got %q", last.Type)
 	}
 }
 
@@ -1082,6 +1089,98 @@ func TestHandlerMessagePersistence(t *testing.T) {
 	}
 	if msg.CreatedAt.IsZero() {
 		t.Error("expected created_at to be set")
+	}
+}
+
+func TestHandlerHistoryEmptyRoom(t *testing.T) {
+	ts, _, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Join a room with no prior messages.
+	conn, _ := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// History envelope is always sent; for an empty room it should be an empty array.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if env.Type != "history" {
+		t.Fatalf("expected type 'history', got %q", env.Type)
+	}
+
+	var historyMsgs []message.Message
+	if err := json.Unmarshal(env.Payload, &historyMsgs); err != nil {
+		t.Fatalf("unmarshal history error: %v", err)
+	}
+	if len(historyMsgs) != 0 {
+		t.Errorf("expected 0 history messages for empty room, got %d", len(historyMsgs))
+	}
+}
+
+func TestHandlerHistoryLimit(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// Pre-populate the store with 60 messages.
+	for i := 0; i < 60; i++ {
+		messages.Append(&message.Message{
+			ID:        fmt.Sprintf("msg-%d", i),
+			RoomID:    "room1",
+			Content:   fmt.Sprintf("message %d", i),
+			Type:      message.TypeChat,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	// Join the room and read the history envelope.
+	conn, _ := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if env.Type != "history" {
+		t.Fatalf("expected type 'history', got %q", env.Type)
+	}
+
+	var historyMsgs []message.Message
+	if err := json.Unmarshal(env.Payload, &historyMsgs); err != nil {
+		t.Fatalf("unmarshal history error: %v", err)
+	}
+
+	// Should receive exactly 50 messages (the limit), not all 60.
+	if len(historyMsgs) != 50 {
+		t.Fatalf("expected 50 history messages, got %d", len(historyMsgs))
+	}
+
+	// Should be the last 50 messages (IDs msg-10 through msg-59).
+	if historyMsgs[0].ID != "msg-10" {
+		t.Errorf("expected first history message ID 'msg-10', got %q", historyMsgs[0].ID)
+	}
+	if historyMsgs[49].ID != "msg-59" {
+		t.Errorf("expected last history message ID 'msg-59', got %q", historyMsgs[49].ID)
 	}
 }
 

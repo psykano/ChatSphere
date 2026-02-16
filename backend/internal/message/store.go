@@ -6,6 +6,7 @@ import "sync"
 type MessageStore interface {
 	Append(msg *Message)
 	After(roomID, afterID string) []*Message
+	Recent(roomID string, n int) []*Message
 	DeleteRoom(roomID string)
 	Count(roomID string) int
 }
@@ -57,6 +58,26 @@ func (s *Store) After(roomID, afterID string) []*Message {
 		}
 	}
 	return nil
+}
+
+// Recent returns the last n messages for a room. If fewer than n
+// messages exist, all messages are returned.
+func (s *Store) Recent(roomID string, n int) []*Message {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	msgs := s.rooms[roomID]
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	start := len(msgs) - n
+	if start < 0 {
+		start = 0
+	}
+	result := make([]*Message, len(msgs)-start)
+	copy(result, msgs[start:])
+	return result
 }
 
 // DeleteRoom removes all stored messages for a room.
