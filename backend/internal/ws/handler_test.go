@@ -471,24 +471,28 @@ func TestHandlerBackfillOnReconnect(t *testing.T) {
 		t.Fatalf("expected type 'backfill', got %q", backfillEnv.Type)
 	}
 
-	var backfillMsgs []message.Message
-	if err := json.Unmarshal(backfillEnv.Payload, &backfillMsgs); err != nil {
-		t.Fatalf("unmarshal backfill messages error: %v", err)
+	var backfillPayload BackfillPayload
+	if err := json.Unmarshal(backfillEnv.Payload, &backfillPayload); err != nil {
+		t.Fatalf("unmarshal backfill payload error: %v", err)
+	}
+
+	if backfillPayload.HasGap {
+		t.Error("expected has_gap to be false for normal backfill")
 	}
 
 	// Should contain: "msg1" + "msg2" + "msg3" (chat messages sent while alice was offline).
 	// Note: "alice left" is NOT included because it was broadcast while alice was still
 	// in the hub, which updated her LastMessageID past it.
-	if len(backfillMsgs) != 3 {
-		t.Fatalf("expected 3 backfill messages, got %d", len(backfillMsgs))
+	if len(backfillPayload.Messages) != 3 {
+		t.Fatalf("expected 3 backfill messages, got %d", len(backfillPayload.Messages))
 	}
 
 	for i, content := range []string{"msg1", "msg2", "msg3"} {
-		if backfillMsgs[i].Content != content {
-			t.Errorf("backfill[%d]: expected content %q, got %q", i, content, backfillMsgs[i].Content)
+		if backfillPayload.Messages[i].Content != content {
+			t.Errorf("backfill[%d]: expected content %q, got %q", i, content, backfillPayload.Messages[i].Content)
 		}
-		if backfillMsgs[i].Type != message.TypeChat {
-			t.Errorf("backfill[%d]: expected type 'chat', got %q", i, backfillMsgs[i].Type)
+		if backfillPayload.Messages[i].Type != message.TypeChat {
+			t.Errorf("backfill[%d]: expected type 'chat', got %q", i, backfillPayload.Messages[i].Type)
 		}
 	}
 }
@@ -1181,6 +1185,183 @@ func TestHandlerHistoryLimit(t *testing.T) {
 	}
 	if historyMsgs[49].ID != "msg-59" {
 		t.Errorf("expected last history message ID 'msg-59', got %q", historyMsgs[49].ID)
+	}
+}
+
+func TestHandlerBackfillGapOnEvictedMessage(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	// Small store: only holds 5 messages per room.
+	messages := message.NewStore(5)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// 1. Alice and Bob connect.
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Drain system messages.
+	drainSystemMessages(t, conn1, 3) // history, alice joined, bob joined
+	drainSystemMessages(t, conn2, 1) // bob joined
+
+	// 2. Alice disconnects.
+	conn1.Close(websocket.StatusNormalClosure, "")
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn2, 1) // "alice left"
+
+	// 3. Bob sends 10 messages — more than the store can hold (5).
+	// This will evict Alice's LastMessageID from the ring buffer.
+	for i := 0; i < 10; i++ {
+		chatPayload, _ := json.Marshal(ChatPayload{Content: fmt.Sprintf("overflow-%d", i)})
+		chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := conn2.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+			cancel()
+			t.Fatalf("write error: %v", err)
+		}
+		cancel()
+		readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, _, err := conn2.Read(readCtx)
+		readCancel()
+		if err != nil {
+			t.Fatalf("bob read own message error: %v", err)
+		}
+	}
+
+	// 4. Alice reconnects — should receive backfill with has_gap=true.
+	conn3, sp3 := dialJoinAndReadSession(t, ts.URL, "room1", "", sp1.SessionID)
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+
+	if !sp3.Resumed {
+		t.Fatal("expected session to be resumed")
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, backfillData, err := conn3.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read backfill error: %v", err)
+	}
+
+	var backfillEnv Envelope
+	if err := json.Unmarshal(backfillData, &backfillEnv); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if backfillEnv.Type != "backfill" {
+		t.Fatalf("expected type 'backfill', got %q", backfillEnv.Type)
+	}
+
+	var backfillPayload BackfillPayload
+	if err := json.Unmarshal(backfillEnv.Payload, &backfillPayload); err != nil {
+		t.Fatalf("unmarshal backfill payload error: %v", err)
+	}
+
+	if !backfillPayload.HasGap {
+		t.Error("expected has_gap=true when LastMessageID was evicted from store")
+	}
+
+	// Should receive the most recent messages (capped by store size).
+	if len(backfillPayload.Messages) == 0 {
+		t.Fatal("expected some backfill messages")
+	}
+	if len(backfillPayload.Messages) > 5 {
+		t.Errorf("expected at most 5 messages (store size), got %d", len(backfillPayload.Messages))
+	}
+
+	// Last message should be the most recent one sent.
+	last := backfillPayload.Messages[len(backfillPayload.Messages)-1]
+	if last.Content != "overflow-9" {
+		t.Errorf("expected last backfill message to be 'overflow-9', got %q", last.Content)
+	}
+}
+
+func TestHandlerBackfillNoGapOnNormalReconnect(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// 1. Alice and Bob connect.
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	drainSystemMessages(t, conn1, 3)
+	drainSystemMessages(t, conn2, 1)
+
+	// 2. Alice disconnects.
+	conn1.Close(websocket.StatusNormalClosure, "")
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn2, 1)
+
+	// 3. Bob sends 2 messages (well within store capacity).
+	for _, content := range []string{"hello", "world"} {
+		chatPayload, _ := json.Marshal(ChatPayload{Content: content})
+		chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := conn2.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+			cancel()
+			t.Fatalf("write error: %v", err)
+		}
+		cancel()
+		readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, _, err := conn2.Read(readCtx)
+		readCancel()
+		if err != nil {
+			t.Fatalf("bob read error: %v", err)
+		}
+	}
+
+	// 4. Alice reconnects.
+	conn3, sp3 := dialJoinAndReadSession(t, ts.URL, "room1", "", sp1.SessionID)
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+
+	if !sp3.Resumed {
+		t.Fatal("expected session to be resumed")
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, backfillData, err := conn3.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read backfill error: %v", err)
+	}
+
+	var backfillEnv Envelope
+	json.Unmarshal(backfillData, &backfillEnv)
+
+	var backfillPayload BackfillPayload
+	json.Unmarshal(backfillEnv.Payload, &backfillPayload)
+
+	if backfillPayload.HasGap {
+		t.Error("expected has_gap=false for normal backfill within store capacity")
+	}
+	if len(backfillPayload.Messages) != 2 {
+		t.Errorf("expected 2 backfill messages, got %d", len(backfillPayload.Messages))
 	}
 }
 

@@ -194,7 +194,15 @@ func (h *Handler) sendSessionInfo(ctx context.Context, client *Client, resumed b
 	}
 }
 
+// BackfillPayload wraps the missed messages with metadata about gaps.
+type BackfillPayload struct {
+	Messages []*message.Message `json:"messages"`
+	HasGap   bool               `json:"has_gap"`
+}
+
 // sendBackfill sends missed messages to a client that is resuming a session.
+// If the last message ID was evicted from the store, it falls back to recent
+// messages and sets has_gap to true so the client can show a gap indicator.
 func (h *Handler) sendBackfill(ctx context.Context, client *Client) {
 	if h.messages == nil {
 		return
@@ -206,11 +214,31 @@ func (h *Handler) sendBackfill(ctx context.Context, client *Client) {
 	}
 
 	missed := h.messages.After(client.roomID, sess.LastMessageID)
+	hasGap := false
+
+	// If After() returned nil but the room has messages, the LastMessageID
+	// was evicted from the store. Fall back to recent messages.
+	if missed == nil && sess.LastMessageID != "" && h.messages.Count(client.roomID) > 0 {
+		missed = h.messages.Recent(client.roomID, backfillLimit)
+		hasGap = true
+	}
+
 	if len(missed) == 0 {
 		return
 	}
 
-	data, err := json.Marshal(missed)
+	// Cap the number of backfilled messages.
+	if len(missed) > backfillLimit {
+		missed = missed[len(missed)-backfillLimit:]
+		hasGap = true
+	}
+
+	payload := BackfillPayload{
+		Messages: missed,
+		HasGap:   hasGap,
+	}
+
+	data, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("ws: failed to marshal backfill: %v", err)
 		return
@@ -235,6 +263,9 @@ func (h *Handler) sendBackfill(ctx context.Context, client *Client) {
 
 // historyLimit is the number of recent messages to send on room join.
 const historyLimit = 50
+
+// backfillLimit caps how many missed messages to send on reconnect.
+const backfillLimit = 200
 
 // sendHistory sends recent message history to a newly joined client.
 // An empty history envelope is always sent so clients can rely on

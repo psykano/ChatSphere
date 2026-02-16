@@ -26,6 +26,11 @@ export interface BackfillMessage {
   created_at: string;
 }
 
+export interface BackfillPayload {
+  messages: BackfillMessage[];
+  has_gap: boolean;
+}
+
 export interface ReconnectingWSOptions {
   url: string;
   roomID: string;
@@ -33,6 +38,7 @@ export interface ReconnectingWSOptions {
   onMessage?: (envelope: Envelope) => void;
   onStateChange?: (state: ConnectionState) => void;
   onSession?: (session: SessionPayload) => void;
+  onBackfillGap?: () => void;
   maxRetries?: number;
   baseDelay?: number;
   maxDelay?: number;
@@ -42,6 +48,9 @@ const DEFAULT_MAX_RETRIES = 10;
 const DEFAULT_BASE_DELAY = 500;
 const DEFAULT_MAX_DELAY = 30_000;
 
+// Max number of message IDs to track for deduplication.
+const SEEN_IDS_LIMIT = 500;
+
 export class ReconnectingWS {
   private ws: WebSocket | null = null;
   private sessionID: string | null = null;
@@ -49,6 +58,8 @@ export class ReconnectingWS {
   private retryCount = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
+  private seenIDs = new Set<string>();
+  private seenIDOrder: string[] = [];
 
   private readonly opts: Required<
     Pick<ReconnectingWSOptions, "maxRetries" | "baseDelay" | "maxDelay">
@@ -126,14 +137,33 @@ export class ReconnectingWS {
         return;
       }
 
-      if (envelope.type === "history" || envelope.type === "backfill") {
+      if (envelope.type === "history") {
         const messages = envelope.payload as BackfillMessage[];
         for (const msg of messages) {
+          this.trackMessageID(msg.id);
           this.opts.onMessage?.({ type: msg.type, payload: msg });
         }
         return;
       }
 
+      if (envelope.type === "backfill") {
+        const backfill = envelope.payload as BackfillPayload;
+        if (backfill.has_gap) {
+          this.opts.onBackfillGap?.();
+        }
+        for (const msg of backfill.messages) {
+          if (this.seenIDs.has(msg.id)) continue;
+          this.trackMessageID(msg.id);
+          this.opts.onMessage?.({ type: msg.type, payload: msg });
+        }
+        return;
+      }
+
+      // Track IDs for regular messages too.
+      const msgPayload = envelope.payload as { id?: string };
+      if (msgPayload?.id) {
+        this.trackMessageID(msgPayload.id);
+      }
       this.opts.onMessage?.(envelope);
     };
 
@@ -192,6 +222,18 @@ export class ReconnectingWS {
     if (this.retryTimer !== null) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
+    }
+  }
+
+  private trackMessageID(id: string): void {
+    if (!id) return;
+    if (this.seenIDs.has(id)) return;
+    this.seenIDs.add(id);
+    this.seenIDOrder.push(id);
+    // Evict oldest IDs when we exceed the limit.
+    while (this.seenIDOrder.length > SEEN_IDS_LIMIT) {
+      const oldest = this.seenIDOrder.shift()!;
+      this.seenIDs.delete(oldest);
     }
   }
 

@@ -345,37 +345,40 @@ describe("ReconnectingWS", () => {
     lastSocket().simulateOpen();
     lastSocket().simulateMessage(sessionEnvelope({ resumed: true }));
 
-    // Simulate backfill envelope with 3 missed messages.
+    // Simulate backfill envelope with new payload format.
     lastSocket().simulateMessage({
       type: "backfill",
-      payload: [
-        {
-          id: "msg-1",
-          room_id: "room1",
-          user_id: "user-1",
-          username: "bob",
-          content: "hello",
-          type: "chat",
-          created_at: "2026-01-01T00:00:00Z",
-        },
-        {
-          id: "msg-2",
-          room_id: "room1",
-          username: "system",
-          content: "alice left the room",
-          type: "system",
-          created_at: "2026-01-01T00:00:01Z",
-        },
-        {
-          id: "msg-3",
-          room_id: "room1",
-          user_id: "user-1",
-          username: "bob",
-          content: "anyone here?",
-          type: "chat",
-          created_at: "2026-01-01T00:00:02Z",
-        },
-      ],
+      payload: {
+        messages: [
+          {
+            id: "msg-1",
+            room_id: "room1",
+            user_id: "user-1",
+            username: "bob",
+            content: "hello",
+            type: "chat",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+          {
+            id: "msg-2",
+            room_id: "room1",
+            username: "system",
+            content: "alice left the room",
+            type: "system",
+            created_at: "2026-01-01T00:00:01Z",
+          },
+          {
+            id: "msg-3",
+            room_id: "room1",
+            user_id: "user-1",
+            username: "bob",
+            content: "anyone here?",
+            type: "chat",
+            created_at: "2026-01-01T00:00:02Z",
+          },
+        ],
+        has_gap: false,
+      },
     });
 
     expect(onMessage).toHaveBeenCalledTimes(3);
@@ -415,10 +418,199 @@ describe("ReconnectingWS", () => {
 
     lastSocket().simulateMessage({
       type: "backfill",
-      payload: [],
+      payload: {
+        messages: [],
+        has_gap: false,
+      },
     });
 
     expect(onMessage).not.toHaveBeenCalled();
+
+    ws.disconnect();
+  });
+
+  it("calls onBackfillGap when has_gap is true", () => {
+    const onMessage = vi.fn();
+    const onBackfillGap = vi.fn();
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      onMessage,
+      onBackfillGap,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope({ resumed: true }));
+
+    lastSocket().simulateMessage({
+      type: "backfill",
+      payload: {
+        messages: [
+          {
+            id: "msg-1",
+            room_id: "room1",
+            user_id: "user-1",
+            username: "bob",
+            content: "recent message",
+            type: "chat",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        has_gap: true,
+      },
+    });
+
+    expect(onBackfillGap).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledTimes(1);
+
+    ws.disconnect();
+  });
+
+  it("does not call onBackfillGap when has_gap is false", () => {
+    const onBackfillGap = vi.fn();
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      onBackfillGap,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope({ resumed: true }));
+
+    lastSocket().simulateMessage({
+      type: "backfill",
+      payload: {
+        messages: [
+          {
+            id: "msg-1",
+            room_id: "room1",
+            content: "hello",
+            type: "chat",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        has_gap: false,
+      },
+    });
+
+    expect(onBackfillGap).not.toHaveBeenCalled();
+
+    ws.disconnect();
+  });
+
+  it("deduplicates backfill messages already seen", () => {
+    const onMessage = vi.fn();
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      onMessage,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    // Receive a live message.
+    lastSocket().simulateMessage({
+      type: "chat",
+      payload: { id: "msg-1", content: "live message" },
+    });
+    expect(onMessage).toHaveBeenCalledTimes(1);
+
+    // Simulate disconnect and reconnect.
+    lastSocket().simulateClose();
+    vi.advanceTimersByTime(1000);
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope({ resumed: true }));
+
+    // Backfill includes the same msg-1 plus a new msg-2.
+    lastSocket().simulateMessage({
+      type: "backfill",
+      payload: {
+        messages: [
+          {
+            id: "msg-1",
+            room_id: "room1",
+            content: "live message",
+            type: "chat",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+          {
+            id: "msg-2",
+            room_id: "room1",
+            content: "missed message",
+            type: "chat",
+            created_at: "2026-01-01T00:00:01Z",
+          },
+        ],
+        has_gap: false,
+      },
+    });
+
+    // msg-1 should be skipped (already seen), only msg-2 delivered.
+    expect(onMessage).toHaveBeenCalledTimes(2); // 1 live + 1 backfill
+    expect(onMessage).toHaveBeenLastCalledWith({
+      type: "chat",
+      payload: expect.objectContaining({ id: "msg-2", content: "missed message" }),
+    });
+
+    ws.disconnect();
+  });
+
+  it("history messages are tracked for deduplication", () => {
+    const onMessage = vi.fn();
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      onMessage,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    // Receive history with msg-1.
+    lastSocket().simulateMessage({
+      type: "history",
+      payload: [
+        {
+          id: "msg-1",
+          room_id: "room1",
+          content: "from history",
+          type: "chat",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    expect(onMessage).toHaveBeenCalledTimes(1);
+
+    // Simulate disconnect and reconnect.
+    lastSocket().simulateClose();
+    vi.advanceTimersByTime(1000);
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope({ resumed: true }));
+
+    // Backfill includes the same msg-1.
+    lastSocket().simulateMessage({
+      type: "backfill",
+      payload: {
+        messages: [
+          {
+            id: "msg-1",
+            room_id: "room1",
+            content: "from history",
+            type: "chat",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        has_gap: false,
+      },
+    });
+
+    // msg-1 should be deduplicated — no additional call.
+    expect(onMessage).toHaveBeenCalledTimes(1);
 
     ws.disconnect();
   });
