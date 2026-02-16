@@ -23,6 +23,7 @@ type Service struct {
 	DependsOn   map[string]any `yaml:"depends_on"`
 	Volumes     []string       `yaml:"volumes"`
 	Healthcheck *Healthcheck   `yaml:"healthcheck"`
+	Restart     string         `yaml:"restart"`
 }
 
 type Build struct {
@@ -227,5 +228,42 @@ func TestDockerignoreFiles(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(root, "frontend/.dockerignore"))
 	if !strings.Contains(string(data), "node_modules") {
 		t.Error("frontend .dockerignore should exclude node_modules")
+	}
+}
+
+func TestNginxWebSocketProxy(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(projectRoot(), "frontend/nginx.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "location /ws") {
+		t.Error("should have WebSocket proxy location")
+	}
+	if !strings.Contains(content, "proxy_http_version 1.1") {
+		t.Error("WebSocket proxy should use HTTP/1.1")
+	}
+	if !strings.Contains(content, `Upgrade $http_upgrade`) {
+		t.Error("WebSocket proxy should set Upgrade header")
+	}
+	if !strings.Contains(content, `Connection "upgrade"`) {
+		t.Error("WebSocket proxy should set Connection header")
+	}
+}
+
+func TestRestartPolicies(t *testing.T) {
+	compose := readCompose(t)
+	for name, svc := range compose.Services {
+		if svc.Restart != "unless-stopped" {
+			t.Errorf("service %s should have restart: unless-stopped, got %q", name, svc.Restart)
+		}
+	}
+}
+
+func TestFrontendHealthcheck(t *testing.T) {
+	frontend := readCompose(t).Services["frontend"]
+	if frontend.Healthcheck == nil {
+		t.Error("frontend should have a healthcheck")
 	}
 }
