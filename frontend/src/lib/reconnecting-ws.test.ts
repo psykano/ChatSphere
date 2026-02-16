@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ReconnectingWS, ConnectionState, SessionPayload } from "./reconnecting-ws";
+import { ReconnectingWS, type ConnectionState, type SessionPayload } from "./reconnecting-ws";
 
 // --- Mock WebSocket ---
 

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ConnectionState,
-  Envelope,
+  type ConnectionState,
+  type Envelope,
   ReconnectingWS,
-  SessionPayload,
+  type SessionPayload,
 } from "@/lib/reconnecting-ws";
 
 export interface UseWebSocketOptions {
