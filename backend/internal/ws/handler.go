@@ -283,6 +283,9 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 			return
 		}
 
+		// Mark activity so idle reaping doesn't close active connections.
+		h.hub.ConnMgr().TouchActivity(client)
+
 		var env Envelope
 		if err := json.Unmarshal(data, &env); err != nil {
 			continue
