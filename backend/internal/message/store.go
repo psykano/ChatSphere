@@ -2,6 +2,14 @@ package message
 
 import "sync"
 
+// MessageStore is the interface for message persistence backends.
+type MessageStore interface {
+	Append(msg *Message)
+	After(roomID, afterID string) []*Message
+	DeleteRoom(roomID string)
+	Count(roomID string) int
+}
+
 // Store keeps recent messages per room in memory for backfill on reconnect.
 type Store struct {
 	mu      sync.RWMutex

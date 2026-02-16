@@ -23,11 +23,11 @@ type Handler struct {
 	hub          *Hub
 	validateRoom RoomValidator
 	sessions     *SessionStore
-	messages     *message.Store
+	messages     message.MessageStore
 }
 
 // NewHandler creates a new WebSocket Handler.
-func NewHandler(hub *Hub, validateRoom RoomValidator, sessions *SessionStore, messages *message.Store) *Handler {
+func NewHandler(hub *Hub, validateRoom RoomValidator, sessions *SessionStore, messages message.MessageStore) *Handler {
 	return &Handler{
 		hub:          hub,
 		validateRoom: validateRoom,

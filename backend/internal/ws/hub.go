@@ -27,7 +27,7 @@ type Hub struct {
 	mu          sync.RWMutex
 	rooms       map[string]map[*Client]struct{}
 	conns       *ConnManager
-	messages    *message.Store
+	messages    message.MessageStore
 	sessions    *SessionStore
 	onJoin      func(roomID string, delta int)
 	onBroadcast func(roomID string)
@@ -44,7 +44,7 @@ func NewHub(onJoin func(roomID string, delta int)) *Hub {
 }
 
 // SetMessageStore sets the message store used for backfill on reconnect.
-func (h *Hub) SetMessageStore(store *message.Store) {
+func (h *Hub) SetMessageStore(store message.MessageStore) {
 	h.messages = store
 }
 

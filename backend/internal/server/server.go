@@ -13,6 +13,7 @@ import (
 	"github.com/christopherjohns/chatsphere/internal/ratelimit"
 	"github.com/christopherjohns/chatsphere/internal/room"
 	"github.com/christopherjohns/chatsphere/internal/ws"
+	"github.com/redis/go-redis/v9"
 )
 
 // Server is the main HTTP server for ChatSphere.
@@ -22,16 +23,31 @@ type Server struct {
 	rooms       *room.Manager
 	hub         *ws.Hub
 	createLimit *ratelimit.IPLimiter
+	redisClient redis.Cmdable
 }
 
-// New creates a new Server listening on addr.
-func New(addr string) *Server {
+// Option configures the server.
+type Option func(*Server)
+
+// WithRedis sets a Redis client for message persistence.
+func WithRedis(client redis.Cmdable) Option {
+	return func(s *Server) {
+		s.redisClient = client
+	}
+}
+
+// New creates a new Server listening on addr. An optional Redis client can be
+// provided for message persistence; pass nil to use in-memory storage.
+func New(addr string, opts ...Option) *Server {
 	rm := room.NewManager()
 	s := &Server{
 		addr:        addr,
 		mux:         http.NewServeMux(),
 		rooms:       rm,
 		createLimit: ratelimit.NewIPLimiter(3, time.Hour),
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.hub = ws.NewHub(func(roomID string, delta int) {
 		if r := rm.Get(roomID); r != nil {
@@ -65,7 +81,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/rooms", s.handleCreateRoom)
 
 	sessions := ws.NewSessionStore(2 * time.Minute)
-	messages := message.NewStore(200)
+	var messages message.MessageStore
+	if s.redisClient != nil {
+		messages = message.NewRedisStore(s.redisClient, 200)
+	} else {
+		messages = message.NewStore(200)
+	}
 	s.hub.SetMessageStore(messages)
 	s.hub.SetSessionStore(sessions)
 	wsHandler := ws.NewHandler(s.hub, func(roomID string) string {
