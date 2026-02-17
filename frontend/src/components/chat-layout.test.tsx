@@ -139,4 +139,25 @@ describe("ChatLayout", () => {
     renderChatLayout();
     expect(screen.getByText(/0 online/)).toBeInTheDocument();
   });
+
+  it("disables message input before username is set", () => {
+    renderChatLayout();
+    const input = screen.getByLabelText("Message input");
+    expect(input).toBeDisabled();
+    expect(input).toHaveAttribute(
+      "placeholder",
+      "Set a username to start chatting",
+    );
+  });
+
+  it("enables message input after username is set", async () => {
+    const user = userEvent.setup();
+    renderChatLayout();
+
+    await user.type(screen.getByLabelText("Username"), "Alice");
+    await user.click(screen.getByRole("button", { name: "Join" }));
+
+    const input = screen.getByLabelText("Message input");
+    expect(input).toHaveAttribute("placeholder", "Type a message...");
+  });
 });

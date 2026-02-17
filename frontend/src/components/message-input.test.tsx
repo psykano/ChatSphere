@@ -72,4 +72,25 @@ describe("MessageInput", () => {
     await user.type(screen.getByLabelText("Message input"), "   {Enter}");
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it("disables input and send button when readOnly is true", () => {
+    render(<MessageInput onSend={vi.fn()} readOnly />);
+    expect(screen.getByLabelText("Message input")).toBeDisabled();
+    expect(screen.getByLabelText("Send message")).toBeDisabled();
+  });
+
+  it("shows read-only placeholder when readOnly is true", () => {
+    render(<MessageInput onSend={vi.fn()} readOnly />);
+    expect(screen.getByLabelText("Message input")).toHaveAttribute(
+      "placeholder",
+      "Set a username to start chatting",
+    );
+  });
+
+  it("does not call onSend when readOnly even with text", async () => {
+    const onSend = vi.fn();
+    render(<MessageInput onSend={onSend} readOnly />);
+    // Input is disabled so user can't type, but verify onSend is not called
+    expect(onSend).not.toHaveBeenCalled();
+  });
 });

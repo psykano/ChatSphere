@@ -156,6 +156,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
         <MessageInput
           onSend={sendMessage}
           disabled={connectionState !== "connected"}
+          readOnly={!username}
         />
       </div>
     </div>
