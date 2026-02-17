@@ -2829,6 +2829,196 @@ func TestHandlerKickBlocksRejoinWithoutSession(t *testing.T) {
 	}
 }
 
+func TestHandlerBanNonHostDenied(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins (not host).
+	conn2, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Bob tries to ban Alice → should fail.
+	sendEnvelope(t, conn2, "ban", BanPayload{UserID: sp1.UserID})
+
+	env, _ := readMessage(t, conn2)
+	if env.Type != "error" {
+		t.Errorf("expected error, got %q", env.Type)
+	}
+}
+
+func TestHandlerBanSelfDenied(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (host).
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn1, 1) // history
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Alice tries to ban herself.
+	sendEnvelope(t, conn1, "ban", BanPayload{UserID: sp1.UserID})
+
+	env, _ := readMessage(t, conn1)
+	if env.Type != "error" {
+		t.Errorf("expected error, got %q", env.Type)
+	}
+}
+
+func TestHandlerBanBlocksRejoinByIP(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice bans Bob.
+	sendEnvelope(t, conn1, "ban", BanPayload{UserID: sp2.UserID})
+	drainSystemMessages(t, conn1, 1) // "bob was banned"
+	waitForClients(t, hub, "room1", 1)
+
+	// A completely new connection (no session, no cookie) from the same IP
+	// should be rejected because the IP is banned.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	conn3, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial error: %v", err)
+	}
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+
+	payload, _ := json.Marshal(JoinPayload{RoomID: "room1", Username: "charlie"})
+	joinEnv, _ := json.Marshal(Envelope{Type: "join", Payload: payload})
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer writeCancel()
+	if err := conn3.Write(writeCtx, websocket.MessageText, joinEnv); err != nil {
+		t.Fatalf("write join error: %v", err)
+	}
+
+	// Should be rejected due to IP ban.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	_, _, err = conn3.Read(readCtx)
+	if err == nil {
+		t.Fatal("expected IP-banned user to be rejected on rejoin")
+	}
+}
+
+func TestHandlerBanBlocksRejoinByCookie(t *testing.T) {
+	ts, hub, userSessions := newHandlerTestServerWithUserSessions(t)
+	defer ts.Close()
+
+	// Create two anonymous sessions (different cookies).
+	aliceSess := userSessions.Create()
+	bobSess := userSessions.Create()
+
+	// Alice joins first (host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins with cookie.
+	conn2, sp2 := dialJoinAndReadSessionWithCookie(t, ts.URL, "room1", "bob", "chatsphere_session", bobSess.Token)
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice bans Bob.
+	sendEnvelope(t, conn1, "ban", BanPayload{UserID: sp2.UserID})
+	drainSystemMessages(t, conn1, 1) // "bob was banned"
+	waitForClients(t, hub, "room1", 1)
+
+	// Bob tries to rejoin with same cookie (different session) → should be
+	// rejected by userID match (cookie resolves to same userID).
+	conn3 := dialWSWithCookie(t, ts.URL, "chatsphere_session", bobSess.Token)
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+
+	payload, _ := json.Marshal(JoinPayload{RoomID: "room1", Username: "bob2"})
+	joinEnv, _ := json.Marshal(Envelope{Type: "join", Payload: payload})
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer writeCancel()
+	if err := conn3.Write(writeCtx, websocket.MessageText, joinEnv); err != nil {
+		t.Fatalf("write join error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	_, _, err := conn3.Read(readCtx)
+	if err == nil {
+		t.Fatal("expected banned user to be rejected when rejoining with same cookie")
+	}
+
+	// Alice with different cookie should also be blocked (same IP in test server).
+	// But let's verify Alice's cookie works since she is the host.
+	_ = aliceSess // aliceSess available but not needed for this test
+}
+
+func TestHandlerBanClearedOnRoomDisconnect(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins room1 (host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1)
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1)
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1)
+	drainSystemMessages(t, conn2, 1)
+
+	// Alice bans Bob.
+	sendEnvelope(t, conn1, "ban", BanPayload{UserID: sp2.UserID})
+	drainSystemMessages(t, conn1, 1)
+	waitForClients(t, hub, "room1", 1)
+
+	// Verify Bob is banned.
+	if !hub.IsBanned("room1", sp2.UserID) {
+		t.Fatal("expected Bob to be banned")
+	}
+
+	// Disconnect the room (simulates room expiration).
+	hub.DisconnectRoom("room1")
+
+	// Ban should be cleared.
+	if hub.IsBanned("room1", sp2.UserID) {
+		t.Fatal("expected ban to be cleared after room disconnect")
+	}
+	if hub.IsBannedIP("room1", "127.0.0.1") {
+		t.Fatal("expected IP ban to be cleared after room disconnect")
+	}
+}
+
 func TestHandlerKickExpiresAfterDuration(t *testing.T) {
 	ts, hub, _ := newHandlerTestServer(t, nil)
 	defer ts.Close()

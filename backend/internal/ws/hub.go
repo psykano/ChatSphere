@@ -22,6 +22,7 @@ type Client struct {
 	username  string
 	roomID    string
 	sessionID string
+	ip        string
 	resumed   bool
 	hub       *Hub
 	isCreator bool
@@ -34,6 +35,7 @@ type Hub struct {
 	rooms       map[string]map[*Client]struct{}
 	hosts       map[string]string               // roomID → host userID
 	banned      map[string]map[string]struct{}   // roomID → set of banned userIDs
+	bannedIPs   map[string]map[string]struct{}   // roomID → set of banned IPs
 	muted       map[string]map[string]struct{}   // roomID → set of muted userIDs
 	kicked      map[string]map[string]time.Time  // roomID → userID → rejoin-allowed-at
 	conns       *ConnManager
@@ -47,11 +49,12 @@ type Hub struct {
 // when a client joins or leaves a room.
 func NewHub(onJoin func(roomID string, delta int)) *Hub {
 	return &Hub{
-		rooms:  make(map[string]map[*Client]struct{}),
-		hosts:  make(map[string]string),
-		banned: make(map[string]map[string]struct{}),
-		muted:  make(map[string]map[string]struct{}),
-		kicked: make(map[string]map[string]time.Time),
+		rooms:     make(map[string]map[*Client]struct{}),
+		hosts:     make(map[string]string),
+		banned:    make(map[string]map[string]struct{}),
+		bannedIPs: make(map[string]map[string]struct{}),
+		muted:     make(map[string]map[string]struct{}),
+		kicked:    make(map[string]map[string]time.Time),
 		conns:  NewConnManager(),
 		onJoin: onJoin,
 	}
@@ -328,6 +331,7 @@ func (h *Hub) DisconnectRoom(roomID string) {
 	delete(h.rooms, roomID)
 	delete(h.hosts, roomID)
 	delete(h.banned, roomID)
+	delete(h.bannedIPs, roomID)
 	delete(h.muted, roomID)
 	delete(h.kicked, roomID)
 	h.mu.Unlock()
@@ -379,14 +383,32 @@ func (h *Hub) IsBanned(roomID, userID string) bool {
 	return ok
 }
 
-// Ban adds a user to the room's ban list.
-func (h *Hub) Ban(roomID, userID string) {
+// Ban adds a user to the room's ban list. If ip is non-empty, the IP
+// address is also banned so the user cannot rejoin from the same network.
+func (h *Hub) Ban(roomID, userID, ip string) {
 	h.mu.Lock()
 	if h.banned[roomID] == nil {
 		h.banned[roomID] = make(map[string]struct{})
 	}
 	h.banned[roomID][userID] = struct{}{}
+	if ip != "" {
+		if h.bannedIPs[roomID] == nil {
+			h.bannedIPs[roomID] = make(map[string]struct{})
+		}
+		h.bannedIPs[roomID][ip] = struct{}{}
+	}
 	h.mu.Unlock()
+}
+
+// IsBannedIP returns true if the IP address is banned from the room.
+func (h *Hub) IsBannedIP(roomID, ip string) bool {
+	if ip == "" {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, ok := h.bannedIPs[roomID][ip]
+	return ok
 }
 
 // IsKicked returns true if the user is temporarily blocked from rejoining the room.

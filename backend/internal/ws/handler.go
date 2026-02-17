@@ -78,6 +78,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		conn:   conn,
 		userID: userID,
+		ip:     extractIP(r),
 		hub:    h.hub,
 	}
 
@@ -176,9 +177,19 @@ func (h *Handler) handleJoin(ctx context.Context, client *Client) bool {
 		}
 	}
 
-	// Also check kick status by the connection's userID (from cookie).
+	// Also check ban/kick status by the connection's userID (from cookie).
+	if h.hub.IsBanned(payload.RoomID, client.userID) {
+		closeWithError(client.conn, "you are banned from this room")
+		return false
+	}
 	if h.hub.IsKicked(payload.RoomID, client.userID) {
 		closeWithError(client.conn, "you are temporarily blocked from this room")
+		return false
+	}
+
+	// Check if the client's IP address is banned.
+	if h.hub.IsBannedIP(payload.RoomID, client.ip) {
+		closeWithError(client.conn, "you are banned from this room")
 		return false
 	}
 
@@ -549,10 +560,12 @@ func (h *Handler) handleBan(ctx context.Context, client *Client, payload json.Ra
 	}
 	target := h.hub.FindClient(client.roomID, p.UserID)
 	targetName := p.UserID[:8]
+	targetIP := ""
 	if target != nil {
 		targetName = target.username
+		targetIP = target.ip
 	}
-	h.hub.Ban(client.roomID, p.UserID)
+	h.hub.Ban(client.roomID, p.UserID, targetIP)
 	h.hub.Broadcast(client.roomID, &message.Message{
 		ID:        generateClientID(),
 		RoomID:    client.roomID,
@@ -661,4 +674,13 @@ func generateClientID() string {
 	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// extractIP returns the client's IP address from the request, stripping the port.
+func extractIP(r *http.Request) string {
+	addr := r.RemoteAddr
+	if i := strings.LastIndex(addr, ":"); i != -1 {
+		return addr[:i]
+	}
+	return addr
 }
