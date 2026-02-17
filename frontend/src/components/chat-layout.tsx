@@ -10,6 +10,7 @@ import { UsernameInput } from "@/components/username-input";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ConnectionStatusBanner } from "@/components/connection-status-banner";
 import { isSameUserAsPrevious } from "@/lib/message-grouping";
+import { useDocumentTitle } from "@/hooks/use-document-title";
 
 interface ChatLayoutProps {
   room: Room;
@@ -33,10 +34,22 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
     retry,
   } = useChat({ roomID: room.id, username });
 
+  const { incrementUnread } = useDocumentTitle();
+
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
+
+  // Track unread messages when tab is hidden
+  const prevUnreadCountRef = useRef(messages.length);
+  useEffect(() => {
+    const newCount = messages.length - prevUnreadCountRef.current;
+    prevUnreadCountRef.current = messages.length;
+    for (let i = 0; i < newCount; i++) {
+      incrementUnread();
+    }
+  }, [messages.length, incrementUnread]);
 
   // Auto-scroll when new messages arrive (only if already near bottom)
   useEffect(() => {
