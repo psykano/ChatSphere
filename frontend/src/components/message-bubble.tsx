@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/hooks/use-chat";
+import { MarkdownContent } from "./markdown-content";
 
 interface MessageBubbleProps {
   message: ChatMessage;
@@ -44,7 +45,7 @@ export function MessageBubble({ message, isOwn }: MessageBubbleProps) {
             : "bg-secondary text-secondary-foreground",
         )}
       >
-        {message.content}
+        <MarkdownContent content={message.content} />
       </div>
       <span className="text-[10px] text-muted-foreground px-1">
         {formatTime(message.created_at)}
