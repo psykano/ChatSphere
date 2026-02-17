@@ -70,4 +70,20 @@ describe("MessageBubble", () => {
     const timeEl = screen.getByText(/\d{1,2}:\d{2}/);
     expect(timeEl).toBeInTheDocument();
   });
+
+  it("hides username when showUsername is false", () => {
+    render(<MessageBubble message={makeMessage()} isOwn={false} showUsername={false} />);
+    expect(screen.queryByText("Alice")).not.toBeInTheDocument();
+    expect(screen.getByText("Hello world")).toBeInTheDocument();
+  });
+
+  it("shows username by default for other users", () => {
+    render(<MessageBubble message={makeMessage()} isOwn={false} />);
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+  });
+
+  it("shows username when showUsername is explicitly true", () => {
+    render(<MessageBubble message={makeMessage()} isOwn={false} showUsername={true} />);
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+  });
 });

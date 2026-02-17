@@ -8,6 +8,7 @@ import { MessageInput } from "@/components/message-input";
 import { TypingIndicator } from "@/components/typing-indicator";
 import { UsernameInput } from "@/components/username-input";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { isSameUserAsPrevious } from "@/lib/message-grouping";
 
 interface ChatLayoutProps {
   room: Room;
@@ -143,13 +144,19 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
           )}
 
           <div className="space-y-2">
-            {messages.map((msg) => (
-              <MessageBubble
-                key={msg.id}
-                message={msg}
-                isOwn={msg.user_id === session?.user_id}
-              />
-            ))}
+            {messages.map((msg, idx) => {
+              const grouped = isSameUserAsPrevious(messages, idx);
+
+              return (
+                <div key={msg.id} className={grouped ? "-mt-1" : ""}>
+                  <MessageBubble
+                    message={msg}
+                    isOwn={msg.user_id === session?.user_id}
+                    showUsername={!grouped}
+                  />
+                </div>
+              );
+            })}
           </div>
 
           <div ref={messagesEndRef} />

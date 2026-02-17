@@ -5,6 +5,7 @@ import { MarkdownContent } from "./markdown-content";
 interface MessageBubbleProps {
   message: ChatMessage;
   isOwn: boolean;
+  showUsername?: boolean;
 }
 
 function formatTime(dateStr: string): string {
@@ -12,7 +13,7 @@ function formatTime(dateStr: string): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function MessageBubble({ message, isOwn }: MessageBubbleProps) {
+export function MessageBubble({ message, isOwn, showUsername = true }: MessageBubbleProps) {
   const isSystem =
     message.type === "system" ||
     message.type === "join" ||
@@ -32,7 +33,7 @@ export function MessageBubble({ message, isOwn }: MessageBubbleProps) {
     <div
       className={cn("flex flex-col gap-0.5 max-w-[85%] sm:max-w-[75%]", isOwn ? "ml-auto items-end" : "items-start")}
     >
-      {!isOwn && message.username && (
+      {!isOwn && message.username && showUsername && (
         <span className="text-xs font-medium text-muted-foreground px-1">
           {message.username}
         </span>
