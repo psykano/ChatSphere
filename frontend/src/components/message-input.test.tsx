@@ -93,4 +93,38 @@ describe("MessageInput", () => {
     // Input is disabled so user can't type, but verify onSend is not called
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it("renders emoji picker button", () => {
+    render(<MessageInput onSend={vi.fn()} />);
+    expect(screen.getByLabelText("Open emoji picker")).toBeInTheDocument();
+  });
+
+  it("inserts emoji into input via emoji picker", async () => {
+    const user = userEvent.setup();
+    render(<MessageInput onSend={vi.fn()} />);
+    await user.click(screen.getByLabelText("Open emoji picker"));
+    await user.click(screen.getByText("😃"));
+    expect(screen.getByLabelText("Message input")).toHaveValue("😃");
+  });
+
+  it("sends message containing emoji", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<MessageInput onSend={onSend} />);
+    await user.type(screen.getByLabelText("Message input"), "Hello ");
+    await user.click(screen.getByLabelText("Open emoji picker"));
+    await user.click(screen.getByText("😃"));
+    await user.click(screen.getByLabelText("Send message"));
+    expect(onSend).toHaveBeenCalledWith("Hello 😃");
+  });
+
+  it("disables emoji picker when disabled", () => {
+    render(<MessageInput onSend={vi.fn()} disabled />);
+    expect(screen.getByLabelText("Open emoji picker")).toBeDisabled();
+  });
+
+  it("disables emoji picker when readOnly", () => {
+    render(<MessageInput onSend={vi.fn()} readOnly />);
+    expect(screen.getByLabelText("Open emoji picker")).toBeDisabled();
+  });
 });

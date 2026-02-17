@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { SendHorizontal } from "lucide-react";
+import { EmojiPicker } from "./emoji-picker";
 
 interface MessageInputProps {
   onSend: (content: string) => void;
@@ -9,6 +10,7 @@ interface MessageInputProps {
 
 export function MessageInput({ onSend, disabled, readOnly }: MessageInputProps) {
   const [value, setValue] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -25,12 +27,30 @@ export function MessageInput({ onSend, disabled, readOnly }: MessageInputProps) 
     }
   }
 
+  function handleEmojiSelect(emoji: string) {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      setValue((prev) => prev + emoji);
+      return;
+    }
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const newValue = value.slice(0, start) + emoji + value.slice(end);
+    setValue(newValue);
+    requestAnimationFrame(() => {
+      const cursorPos = start + emoji.length;
+      textarea.setSelectionRange(cursorPos, cursorPos);
+      textarea.focus();
+    });
+  }
+
   return (
     <form
       onSubmit={handleSubmit}
       className="flex items-end gap-2 border-t border-border bg-card p-3 sm:p-4"
     >
       <textarea
+        ref={textareaRef}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
@@ -40,6 +60,7 @@ export function MessageInput({ onSend, disabled, readOnly }: MessageInputProps) 
         aria-label="Message input"
         className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
       />
+      <EmojiPicker onSelect={handleEmojiSelect} disabled={disabled || readOnly} />
       <button
         type="submit"
         disabled={disabled || readOnly || !value.trim()}
