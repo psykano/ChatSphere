@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/christopherjohns/chatsphere/internal/message"
+	"github.com/christopherjohns/chatsphere/internal/ratelimit"
 	"nhooyr.io/websocket"
 )
 
@@ -1730,6 +1731,223 @@ func TestHandlerHistoryFetchLimitCapped(t *testing.T) {
 	}
 	if !batch.HasMore {
 		t.Error("expected has_more=true")
+	}
+}
+
+func TestHandlerChatRateLimited(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
+	// Allow only 3 messages per 10 seconds for testing.
+	handler.SetChatLimiter(ratelimit.NewIPLimiter(3, 10*time.Second))
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1) // "alice joined"
+
+	// Send 3 messages — all should succeed.
+	for i := 0; i < 3; i++ {
+		chatPayload, _ := json.Marshal(ChatPayload{Content: fmt.Sprintf("msg-%d", i)})
+		chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := conn.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+			cancel()
+			t.Fatalf("write error: %v", err)
+		}
+		cancel()
+
+		readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, data, err := conn.Read(readCtx)
+		readCancel()
+		if err != nil {
+			t.Fatalf("read error on message %d: %v", i, err)
+		}
+
+		var env Envelope
+		json.Unmarshal(data, &env)
+		if env.Type != "chat" {
+			t.Fatalf("expected type 'chat' for message %d, got %q", i, env.Type)
+		}
+	}
+
+	// 4th message should be rate limited.
+	chatPayload, _ := json.Marshal(ChatPayload{Content: "should be limited"})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	if env.Type != "error" {
+		t.Fatalf("expected type 'error' for rate-limited message, got %q", env.Type)
+	}
+
+	var errPayload ErrorPayload
+	json.Unmarshal(env.Payload, &errPayload)
+	if !strings.Contains(errPayload.Message, "rate limit") {
+		t.Errorf("expected rate limit error, got %q", errPayload.Message)
+	}
+}
+
+func TestHandlerChatRateLimitPerUser(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
+	handler.SetChatLimiter(ratelimit.NewIPLimiter(2, 10*time.Second))
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	drainSystemMessages(t, conn1, 2) // "alice joined", "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice sends 2 messages (hits her limit).
+	for i := 0; i < 2; i++ {
+		chatPayload, _ := json.Marshal(ChatPayload{Content: fmt.Sprintf("alice-%d", i)})
+		chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := conn1.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+			cancel()
+			t.Fatalf("write error: %v", err)
+		}
+		cancel()
+
+		// Both clients receive the message.
+		for _, c := range []*websocket.Conn{conn1, conn2} {
+			readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, _, err := c.Read(readCtx)
+			readCancel()
+			if err != nil {
+				t.Fatalf("read error: %v", err)
+			}
+		}
+	}
+
+	// Bob should still be able to send (independent limit).
+	chatPayload, _ := json.Marshal(ChatPayload{Content: "bob-0"})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn2.Write(ctx, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn2.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	if env.Type != "chat" {
+		t.Errorf("expected bob's message to succeed, got type %q", env.Type)
+	}
+}
+
+func TestHandlerChatRateLimitWindowExpiry(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
+	// Allow 2 messages per 100ms.
+	handler.SetChatLimiter(ratelimit.NewIPLimiter(2, 100*time.Millisecond))
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1)
+
+	// Exhaust the limit.
+	for i := 0; i < 2; i++ {
+		chatPayload, _ := json.Marshal(ChatPayload{Content: fmt.Sprintf("msg-%d", i)})
+		chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		conn.Write(ctx, websocket.MessageText, chatEnv)
+		cancel()
+		readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		conn.Read(readCtx)
+		readCancel()
+	}
+
+	// Should be rate limited now.
+	chatPayload, _ := json.Marshal(ChatPayload{Content: "limited"})
+	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	conn.Write(ctx, websocket.MessageText, chatEnv)
+	cancel()
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, data, _ := conn.Read(readCtx)
+	readCancel()
+	var env Envelope
+	json.Unmarshal(data, &env)
+	if env.Type != "error" {
+		t.Fatal("expected rate limit error before window expiry")
+	}
+
+	// Wait for window to expire.
+	time.Sleep(150 * time.Millisecond)
+
+	// Should be allowed again.
+	chatPayload, _ = json.Marshal(ChatPayload{Content: "after-window"})
+	chatEnv, _ = json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	if err := conn.Write(ctx2, websocket.MessageText, chatEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	readCtx2, readCancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel2()
+	_, data, err := conn.Read(readCtx2)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	json.Unmarshal(data, &env)
+	if env.Type != "chat" {
+		t.Errorf("expected message to succeed after window expiry, got type %q", env.Type)
 	}
 }
 

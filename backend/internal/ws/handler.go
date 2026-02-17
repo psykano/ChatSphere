@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/christopherjohns/chatsphere/internal/message"
+	"github.com/christopherjohns/chatsphere/internal/ratelimit"
 	"nhooyr.io/websocket"
 )
 
@@ -24,6 +25,7 @@ type Handler struct {
 	validateRoom RoomValidator
 	sessions     *SessionStore
 	messages     message.MessageStore
+	chatLimiter  *ratelimit.IPLimiter
 }
 
 // NewHandler creates a new WebSocket Handler.
@@ -33,7 +35,13 @@ func NewHandler(hub *Hub, validateRoom RoomValidator, sessions *SessionStore, me
 		validateRoom: validateRoom,
 		sessions:     sessions,
 		messages:     messages,
+		chatLimiter:  ratelimit.NewIPLimiter(10, 10*time.Second),
 	}
+}
+
+// SetChatLimiter replaces the default chat rate limiter (for testing).
+func (h *Handler) SetChatLimiter(l *ratelimit.IPLimiter) {
+	h.chatLimiter = l
 }
 
 // ServeHTTP upgrades the HTTP connection to a WebSocket and runs the
@@ -397,6 +405,10 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 			}
 			if len(content) > maxMessageLength {
 				h.sendError(ctx, client, "message exceeds maximum length of 2000 characters")
+				continue
+			}
+			if !h.chatLimiter.Allow(client.userID) {
+				h.sendError(ctx, client, "rate limit exceeded: max 10 messages per 10 seconds")
 				continue
 			}
 			h.hub.Broadcast(client.roomID, &message.Message{
