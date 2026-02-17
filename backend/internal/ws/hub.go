@@ -20,12 +20,17 @@ type Client struct {
 	sessionID string
 	resumed   bool
 	hub       *Hub
+	isCreator bool
+	kicked    bool // set when the user is kicked/banned to suppress "left" message
 }
 
 // Hub manages WebSocket clients grouped by room.
 type Hub struct {
 	mu          sync.RWMutex
 	rooms       map[string]map[*Client]struct{}
+	hosts       map[string]string               // roomID → host userID
+	banned      map[string]map[string]struct{}   // roomID → set of banned userIDs
+	muted       map[string]map[string]struct{}   // roomID → set of muted userIDs
 	conns       *ConnManager
 	messages    message.MessageStore
 	sessions    *SessionStore
@@ -38,6 +43,9 @@ type Hub struct {
 func NewHub(onJoin func(roomID string, delta int)) *Hub {
 	return &Hub{
 		rooms:  make(map[string]map[*Client]struct{}),
+		hosts:  make(map[string]string),
+		banned: make(map[string]map[string]struct{}),
+		muted:  make(map[string]map[string]struct{}),
 		conns:  NewConnManager(),
 		onJoin: onJoin,
 	}
@@ -106,6 +114,21 @@ type ErrorPayload struct {
 	Message string `json:"message"`
 }
 
+// KickPayload is sent by a room creator to kick a user.
+type KickPayload struct {
+	UserID string `json:"user_id"`
+}
+
+// BanPayload is sent by a room creator to ban a user.
+type BanPayload struct {
+	UserID string `json:"user_id"`
+}
+
+// MutePayload is sent by a room creator to mute/unmute a user.
+type MutePayload struct {
+	UserID string `json:"user_id"`
+}
+
 // maxMessageLength is the maximum allowed length for a chat message.
 const maxMessageLength = 2000
 
@@ -122,6 +145,13 @@ func (h *Hub) addClient(c *Client) context.Context {
 		h.rooms[c.roomID] = make(map[*Client]struct{})
 	}
 	h.rooms[c.roomID][c] = struct{}{}
+	// First client to join becomes the room host.
+	if _, ok := h.hosts[c.roomID]; !ok {
+		h.hosts[c.roomID] = c.userID
+		c.isCreator = true
+	} else if h.hosts[c.roomID] == c.userID {
+		c.isCreator = true
+	}
 	h.mu.Unlock()
 
 	if h.onJoin != nil {
@@ -131,19 +161,24 @@ func (h *Hub) addClient(c *Client) context.Context {
 }
 
 // removeClient unregisters a client from its room and stops its write pump.
+// It is safe to call multiple times (e.g. after KickClient).
 func (h *Hub) removeClient(c *Client) {
 	h.conns.Remove(c)
 
+	removed := false
 	h.mu.Lock()
 	if clients, ok := h.rooms[c.roomID]; ok {
-		delete(clients, c)
-		if len(clients) == 0 {
-			delete(h.rooms, c.roomID)
+		if _, exists := clients[c]; exists {
+			delete(clients, c)
+			removed = true
+			if len(clients) == 0 {
+				delete(h.rooms, c.roomID)
+			}
 		}
 	}
 	h.mu.Unlock()
 
-	if h.onJoin != nil {
+	if removed && h.onJoin != nil {
 		h.onJoin(c.roomID, -1)
 	}
 }
@@ -199,6 +234,9 @@ func (h *Hub) DisconnectRoom(roomID string) {
 		targets = append(targets, c)
 	}
 	delete(h.rooms, roomID)
+	delete(h.hosts, roomID)
+	delete(h.banned, roomID)
+	delete(h.muted, roomID)
 	h.mu.Unlock()
 
 	for _, c := range targets {
@@ -211,4 +249,80 @@ func (h *Hub) ClientCount(roomID string) int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.rooms[roomID])
+}
+
+// FindClient returns the client with the given userID in the room, or nil.
+func (h *Hub) FindClient(roomID, userID string) *Client {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.rooms[roomID] {
+		if c.userID == userID {
+			return c
+		}
+	}
+	return nil
+}
+
+// IsBanned returns true if the user is banned from the room.
+func (h *Hub) IsBanned(roomID, userID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, ok := h.banned[roomID][userID]
+	return ok
+}
+
+// Ban adds a user to the room's ban list.
+func (h *Hub) Ban(roomID, userID string) {
+	h.mu.Lock()
+	if h.banned[roomID] == nil {
+		h.banned[roomID] = make(map[string]struct{})
+	}
+	h.banned[roomID][userID] = struct{}{}
+	h.mu.Unlock()
+}
+
+// IsMuted returns true if the user is muted in the room.
+func (h *Hub) IsMuted(roomID, userID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, ok := h.muted[roomID][userID]
+	return ok
+}
+
+// Mute toggles a user's mute status in the room. Returns true if the user
+// is muted after the call.
+func (h *Hub) Mute(roomID, userID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.muted[roomID] == nil {
+		h.muted[roomID] = make(map[string]struct{})
+	}
+	if _, ok := h.muted[roomID][userID]; ok {
+		delete(h.muted[roomID], userID)
+		return false
+	}
+	h.muted[roomID][userID] = struct{}{}
+	return true
+}
+
+// KickClient forcefully disconnects a client from its room.
+// It removes the client from the room map first to prevent
+// subsequent broadcasts from sending to a closed channel.
+func (h *Hub) KickClient(c *Client) {
+	c.kicked = true
+
+	h.mu.Lock()
+	if clients, ok := h.rooms[c.roomID]; ok {
+		delete(clients, c)
+		if len(clients) == 0 {
+			delete(h.rooms, c.roomID)
+		}
+	}
+	h.mu.Unlock()
+
+	h.conns.Remove(c)
+
+	if h.onJoin != nil {
+		h.onJoin(c.roomID, -1)
+	}
 }

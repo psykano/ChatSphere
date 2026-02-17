@@ -1967,3 +1967,372 @@ func TestHandlerJoinUsernameTrimmed(t *testing.T) {
 		t.Errorf("expected trimmed username 'alice', got %q", sp.Username)
 	}
 }
+
+// readMessage reads one envelope from the connection and parses it.
+func readMessage(t *testing.T, conn *websocket.Conn) (Envelope, message.Message) {
+	t.Helper()
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatalf("unmarshal envelope error: %v", err)
+	}
+	var msg message.Message
+	json.Unmarshal(env.Payload, &msg)
+	return env, msg
+}
+
+// sendEnvelope sends a typed envelope with the given payload.
+func sendEnvelope(t *testing.T, conn *websocket.Conn, typ string, payload interface{}) {
+	t.Helper()
+	p, _ := json.Marshal(payload)
+	env, _ := json.Marshal(Envelope{Type: typ, Payload: p})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, env); err != nil {
+		t.Fatalf("write %s error: %v", typ, err)
+	}
+}
+
+// waitForClients waits until the hub has the expected number of clients in a room.
+func waitForClients(t *testing.T, hub *Hub, roomID string, count int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount(roomID) != count && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hub.ClientCount(roomID) != count {
+		t.Fatalf("expected %d clients in %s, got %d", count, roomID, hub.ClientCount(roomID))
+	}
+}
+
+func TestHandlerKick(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (becomes host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	// Drain history from conn2.
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+
+	// Drain "bob joined" from both.
+	drainSystemMessages(t, conn1, 1)
+	drainSystemMessages(t, conn2, 1)
+
+	// Alice kicks Bob.
+	sendEnvelope(t, conn1, "kick", KickPayload{UserID: sp2.UserID})
+
+	// Alice should receive "bob was kicked" system message.
+	env, msg := readMessage(t, conn1)
+	if env.Type != "system" {
+		t.Errorf("expected type 'system', got %q", env.Type)
+	}
+	if msg.Action != message.ActionKick {
+		t.Errorf("expected action 'kick', got %q", msg.Action)
+	}
+	if !strings.Contains(msg.Content, "kicked") {
+		t.Errorf("expected 'kicked' in content, got %q", msg.Content)
+	}
+	if msg.Username != "bob" {
+		t.Errorf("expected username 'bob', got %q", msg.Username)
+	}
+
+	// Bob should be disconnected.
+	waitForClients(t, hub, "room1", 1)
+
+	// Alice should NOT receive a "bob left" system message (kick suppresses it).
+	// Verify by sending a chat and checking the next message is a chat, not system.
+	sendEnvelope(t, conn1, "chat", ChatPayload{Content: "test after kick"})
+	env2, _ := readMessage(t, conn1)
+	if env2.Type != "chat" {
+		t.Errorf("expected next message to be 'chat' (no extra 'left' msg), got %q", env2.Type)
+	}
+}
+
+func TestHandlerKickNonHostDenied(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (host).
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn1, 1) // history
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins (not host).
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Bob tries to kick Alice — should fail.
+	sendEnvelope(t, conn2, "kick", KickPayload{UserID: sp1.UserID})
+
+	env, _ := readMessage(t, conn2)
+	if env.Type != "error" {
+		t.Errorf("expected 'error' for non-host kick, got %q", env.Type)
+	}
+
+	// Both clients should still be connected.
+	if hub.ClientCount("room1") != 2 {
+		t.Errorf("expected 2 clients after denied kick, got %d", hub.ClientCount("room1"))
+	}
+}
+
+func TestHandlerBan(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice bans Bob.
+	sendEnvelope(t, conn1, "ban", BanPayload{UserID: sp2.UserID})
+
+	// Alice should receive "bob was banned" system message.
+	env, msg := readMessage(t, conn1)
+	if env.Type != "system" {
+		t.Errorf("expected type 'system', got %q", env.Type)
+	}
+	if msg.Action != message.ActionBan {
+		t.Errorf("expected action 'ban', got %q", msg.Action)
+	}
+	if !strings.Contains(msg.Content, "banned") {
+		t.Errorf("expected 'banned' in content, got %q", msg.Content)
+	}
+
+	// Bob should be disconnected.
+	waitForClients(t, hub, "room1", 1)
+
+	// Bob should NOT be able to rejoin (banned).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	conn3, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial error: %v", err)
+	}
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+
+	// Try to rejoin with Bob's session.
+	payload, _ := json.Marshal(JoinPayload{RoomID: "room1", Username: "bob", SessionID: sp2.SessionID})
+	joinEnv, _ := json.Marshal(Envelope{Type: "join", Payload: payload})
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer writeCancel()
+	if err := conn3.Write(writeCtx, websocket.MessageText, joinEnv); err != nil {
+		t.Fatalf("write join error: %v", err)
+	}
+
+	// Should be rejected.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	_, _, err = conn3.Read(readCtx)
+	if err == nil {
+		t.Fatal("expected banned user to be rejected on rejoin")
+	}
+}
+
+func TestHandlerMute(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice mutes Bob.
+	sendEnvelope(t, conn1, "mute", MutePayload{UserID: sp2.UserID})
+
+	// Both should receive "bob was muted" system message.
+	env1, msg1 := readMessage(t, conn1)
+	if env1.Type != "system" {
+		t.Errorf("expected type 'system', got %q", env1.Type)
+	}
+	if msg1.Action != message.ActionMute {
+		t.Errorf("expected action 'mute', got %q", msg1.Action)
+	}
+	if !strings.Contains(msg1.Content, "muted") {
+		t.Errorf("expected 'muted' in content, got %q", msg1.Content)
+	}
+
+	env2, _ := readMessage(t, conn2)
+	if env2.Type != "system" {
+		t.Errorf("bob should receive system mute message, got %q", env2.Type)
+	}
+
+	// Bob tries to send a chat — should fail.
+	sendEnvelope(t, conn2, "chat", ChatPayload{Content: "hello"})
+
+	envErr, _ := readMessage(t, conn2)
+	if envErr.Type != "error" {
+		t.Errorf("expected error for muted user, got %q", envErr.Type)
+	}
+
+	// Alice unmutes Bob.
+	sendEnvelope(t, conn1, "mute", MutePayload{UserID: sp2.UserID})
+
+	// Both receive "bob was unmuted".
+	env3, msg3 := readMessage(t, conn1)
+	if env3.Type != "system" {
+		t.Errorf("expected system unmute message, got %q", env3.Type)
+	}
+	if !strings.Contains(msg3.Content, "unmuted") {
+		t.Errorf("expected 'unmuted' in content, got %q", msg3.Content)
+	}
+	drainSystemMessages(t, conn2, 1) // unmute message
+
+	// Bob can now send messages.
+	sendEnvelope(t, conn2, "chat", ChatPayload{Content: "I can talk again"})
+
+	envChat, msgChat := readMessage(t, conn2)
+	if envChat.Type != "chat" {
+		t.Errorf("expected bob's message to succeed after unmute, got %q", envChat.Type)
+	}
+	if msgChat.Content != "I can talk again" {
+		t.Errorf("expected 'I can talk again', got %q", msgChat.Content)
+	}
+}
+
+func TestHandlerKickSelfDenied(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn1, 1) // history
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Alice tries to kick herself.
+	sendEnvelope(t, conn1, "kick", KickPayload{UserID: sp1.UserID})
+
+	env, _ := readMessage(t, conn1)
+	if env.Type != "error" {
+		t.Errorf("expected error when kicking self, got %q", env.Type)
+	}
+}
+
+func TestHandlerSystemMessageActionField(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins — her join message should have action "join".
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+
+	env, msg := readMessage(t, conn1)
+	if env.Type != "system" {
+		t.Fatalf("expected system message, got %q", env.Type)
+	}
+	if msg.Action != message.ActionJoin {
+		t.Errorf("expected action 'join', got %q", msg.Action)
+	}
+	if !strings.Contains(msg.Content, "joined") {
+		t.Errorf("expected 'joined' in content, got %q", msg.Content)
+	}
+
+	// Bob joins — then disconnects. Alice should see "bob left" with action "leave".
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	conn2.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+
+	env, msg = readMessage(t, conn1)
+	if env.Type != "system" {
+		t.Fatalf("expected system message, got %q", env.Type)
+	}
+	if msg.Action != message.ActionLeave {
+		t.Errorf("expected action 'leave', got %q", msg.Action)
+	}
+	if !strings.Contains(msg.Content, "left") {
+		t.Errorf("expected 'left' in content, got %q", msg.Content)
+	}
+}
+
+func TestHandlerHostResumedKeepsHostStatus(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (host), then bob joins.
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	drainSystemMessages(t, conn1, 1) // history
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice disconnects and reconnects (resumes).
+	conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn2, 1) // "alice left"
+
+	conn3, sp3 := dialJoinAndReadSession(t, ts.URL, "room1", "", sp1.SessionID)
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+	if !sp3.Resumed {
+		t.Fatal("expected session to be resumed")
+	}
+	waitForClients(t, hub, "room1", 2)
+
+	// Alice (resumed) should still be able to kick Bob.
+	sendEnvelope(t, conn3, "kick", KickPayload{UserID: sp2.UserID})
+
+	// Read backfill first if any, then the kick message.
+	// The backfill may contain the "alice left" message.
+	for {
+		env, msg := readMessage(t, conn3)
+		if env.Type == "backfill" {
+			continue
+		}
+		if env.Type == "system" && msg.Action == message.ActionKick {
+			if !strings.Contains(msg.Content, "kicked") {
+				t.Errorf("expected 'kicked' in content, got %q", msg.Content)
+			}
+			break
+		}
+		t.Fatalf("unexpected message type %q after resume kick", env.Type)
+	}
+}

@@ -81,21 +81,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Username:  client.username,
 			Content:   client.username + " joined the room",
 			Type:      message.TypeSystem,
+			Action:    message.ActionJoin,
 			CreatedAt: time.Now(),
 		})
 	}
 
 	h.readLoop(r.Context(), connCtx, client)
 
-	// Broadcast a system message that the user left.
-	h.hub.Broadcast(client.roomID, &message.Message{
-		ID:        generateClientID(),
-		RoomID:    client.roomID,
-		Username:  client.username,
-		Content:   client.username + " left the room",
-		Type:      message.TypeSystem,
-		CreatedAt: time.Now(),
-	})
+	// Broadcast a "left" message unless the user was kicked/banned
+	// (those actions already broadcast their own system message).
+	if !client.kicked {
+		h.hub.Broadcast(client.roomID, &message.Message{
+			ID:        generateClientID(),
+			RoomID:    client.roomID,
+			Username:  client.username,
+			Content:   client.username + " left the room",
+			Type:      message.TypeSystem,
+			Action:    message.ActionLeave,
+			CreatedAt: time.Now(),
+		})
+	}
 }
 
 // handleJoin reads the first message from the client and expects a "join"
@@ -135,6 +140,16 @@ func (h *Handler) handleJoin(ctx context.Context, client *Client) bool {
 		if reason := h.validateRoom(payload.RoomID); reason != "" {
 			closeWithError(client.conn, reason)
 			return false
+		}
+	}
+
+	// Check if the user is banned from this room (by session).
+	if payload.SessionID != "" {
+		if sess := h.sessions.Get(payload.SessionID); sess != nil {
+			if h.hub.IsBanned(payload.RoomID, sess.UserID) {
+				closeWithError(client.conn, "you are banned from this room")
+				return false
+			}
 		}
 	}
 
@@ -398,6 +413,10 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 			if err := json.Unmarshal(env.Payload, &payload); err != nil {
 				continue
 			}
+			if h.hub.IsMuted(client.roomID, client.userID) {
+				h.sendError(ctx, client, "you are muted in this room")
+				continue
+			}
 			content := strings.TrimSpace(payload.Content)
 			if content == "" {
 				h.sendError(ctx, client, "message content is required")
@@ -420,6 +439,12 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 				Type:      message.TypeChat,
 				CreatedAt: time.Now(),
 			})
+		case "kick":
+			h.handleKick(ctx, client, env.Payload)
+		case "ban":
+			h.handleBan(ctx, client, env.Payload)
+		case "mute":
+			h.handleMute(ctx, client, env.Payload)
 		case "history_fetch":
 			var payload HistoryFetchPayload
 			if err := json.Unmarshal(env.Payload, &payload); err != nil {
@@ -430,6 +455,111 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 			return
 		}
 	}
+}
+
+// handleKick removes a user from the room.
+func (h *Handler) handleKick(ctx context.Context, client *Client, payload json.RawMessage) {
+	if !client.isCreator {
+		h.sendError(ctx, client, "only the room host can kick users")
+		return
+	}
+	var p KickPayload
+	if err := json.Unmarshal(payload, &p); err != nil || p.UserID == "" {
+		h.sendError(ctx, client, "invalid kick payload")
+		return
+	}
+	if p.UserID == client.userID {
+		h.sendError(ctx, client, "you cannot kick yourself")
+		return
+	}
+	target := h.hub.FindClient(client.roomID, p.UserID)
+	if target == nil {
+		h.sendError(ctx, client, "user not found in room")
+		return
+	}
+	h.hub.Broadcast(client.roomID, &message.Message{
+		ID:        generateClientID(),
+		RoomID:    client.roomID,
+		Username:  target.username,
+		Content:   target.username + " was kicked from the room",
+		Type:      message.TypeSystem,
+		Action:    message.ActionKick,
+		CreatedAt: time.Now(),
+	})
+	h.hub.KickClient(target)
+}
+
+// handleBan bans a user from the room and kicks them if connected.
+func (h *Handler) handleBan(ctx context.Context, client *Client, payload json.RawMessage) {
+	if !client.isCreator {
+		h.sendError(ctx, client, "only the room host can ban users")
+		return
+	}
+	var p BanPayload
+	if err := json.Unmarshal(payload, &p); err != nil || p.UserID == "" {
+		h.sendError(ctx, client, "invalid ban payload")
+		return
+	}
+	if p.UserID == client.userID {
+		h.sendError(ctx, client, "you cannot ban yourself")
+		return
+	}
+	target := h.hub.FindClient(client.roomID, p.UserID)
+	targetName := p.UserID[:8]
+	if target != nil {
+		targetName = target.username
+	}
+	h.hub.Ban(client.roomID, p.UserID)
+	h.hub.Broadcast(client.roomID, &message.Message{
+		ID:        generateClientID(),
+		RoomID:    client.roomID,
+		Username:  targetName,
+		Content:   targetName + " was banned from the room",
+		Type:      message.TypeSystem,
+		Action:    message.ActionBan,
+		CreatedAt: time.Now(),
+	})
+	if target != nil {
+		h.hub.KickClient(target)
+	}
+}
+
+// handleMute toggles a user's mute status in the room.
+func (h *Handler) handleMute(ctx context.Context, client *Client, payload json.RawMessage) {
+	if !client.isCreator {
+		h.sendError(ctx, client, "only the room host can mute users")
+		return
+	}
+	var p MutePayload
+	if err := json.Unmarshal(payload, &p); err != nil || p.UserID == "" {
+		h.sendError(ctx, client, "invalid mute payload")
+		return
+	}
+	if p.UserID == client.userID {
+		h.sendError(ctx, client, "you cannot mute yourself")
+		return
+	}
+	target := h.hub.FindClient(client.roomID, p.UserID)
+	if target == nil {
+		h.sendError(ctx, client, "user not found in room")
+		return
+	}
+	muted := h.hub.Mute(client.roomID, p.UserID)
+	var content string
+	if muted {
+		content = target.username + " was muted"
+	} else {
+		content = target.username + " was unmuted"
+	}
+	h.hub.Broadcast(client.roomID, &message.Message{
+		ID:        generateClientID(),
+		RoomID:    client.roomID,
+		Username:  target.username,
+		Content:   content,
+		Type:      message.TypeSystem,
+		Action:    message.ActionMute,
+		CreatedAt: time.Now(),
+	})
 }
 
 // sendError writes an error envelope to the client.

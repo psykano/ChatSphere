@@ -129,6 +129,7 @@ func (s *Server) routes() {
 				RoomID:    roomID,
 				Content:   content,
 				Type:      message.TypeSystem,
+				Action:    message.ActionExpiration,
 				CreatedAt: time.Now(),
 			})
 		},

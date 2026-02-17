@@ -10,6 +10,18 @@ const (
 	TypeSystem Type = "system"
 )
 
+// Action describes what triggered a system message.
+type Action string
+
+const (
+	ActionJoin       Action = "join"
+	ActionLeave      Action = "leave"
+	ActionKick       Action = "kick"
+	ActionBan        Action = "ban"
+	ActionMute       Action = "mute"
+	ActionExpiration Action = "expiration"
+)
+
 // Message represents a chat message.
 type Message struct {
 	ID        string    `json:"id"`
@@ -18,5 +30,6 @@ type Message struct {
 	Username  string    `json:"username,omitempty"`
 	Content   string    `json:"content"`
 	Type      Type      `json:"type"`
+	Action    Action    `json:"action,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
