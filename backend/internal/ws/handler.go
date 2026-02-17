@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -581,6 +582,7 @@ func (h *Handler) handleBan(ctx context.Context, client *Client, payload json.Ra
 }
 
 // handleMute toggles a user's mute status in the room.
+// If duration is provided (in seconds), the mute expires automatically.
 func (h *Handler) handleMute(ctx context.Context, client *Client, payload json.RawMessage) {
 	if !client.isCreator {
 		h.sendError(ctx, client, "only the room host can mute users")
@@ -589,6 +591,10 @@ func (h *Handler) handleMute(ctx context.Context, client *Client, payload json.R
 	var p MutePayload
 	if err := json.Unmarshal(payload, &p); err != nil || p.UserID == "" {
 		h.sendError(ctx, client, "invalid mute payload")
+		return
+	}
+	if p.Duration < 0 {
+		h.sendError(ctx, client, "duration must not be negative")
 		return
 	}
 	if p.UserID == client.userID {
@@ -600,10 +606,15 @@ func (h *Handler) handleMute(ctx context.Context, client *Client, payload json.R
 		h.sendError(ctx, client, "user not found in room")
 		return
 	}
-	muted := h.hub.Mute(client.roomID, p.UserID)
+	duration := time.Duration(p.Duration) * time.Second
+	muted := h.hub.Mute(client.roomID, p.UserID, duration)
 	var content string
 	if muted {
-		content = target.username + " was muted"
+		if p.Duration > 0 {
+			content = fmt.Sprintf("%s was muted for %s", target.username, formatDuration(duration))
+		} else {
+			content = target.username + " was muted"
+		}
 	} else {
 		content = target.username + " was unmuted"
 	}
@@ -616,6 +627,42 @@ func (h *Handler) handleMute(ctx context.Context, client *Client, payload json.R
 		Action:    message.ActionMute,
 		CreatedAt: time.Now(),
 	})
+}
+
+// formatDuration returns a human-readable duration string like "5 minutes"
+// or "1 hour 30 minutes".
+func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+
+	var parts []string
+	if hours > 0 {
+		if hours == 1 {
+			parts = append(parts, "1 hour")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d hours", hours))
+		}
+	}
+	if minutes > 0 {
+		if minutes == 1 {
+			parts = append(parts, "1 minute")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d minutes", minutes))
+		}
+	}
+	if seconds > 0 && hours == 0 {
+		if seconds == 1 {
+			parts = append(parts, "1 second")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d seconds", seconds))
+		}
+	}
+	if len(parts) == 0 {
+		return "0 seconds"
+	}
+	return strings.Join(parts, " ")
 }
 
 // handleSetUsername updates a client's username in the current room.

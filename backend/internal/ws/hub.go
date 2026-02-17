@@ -36,7 +36,7 @@ type Hub struct {
 	hosts       map[string]string               // roomID → host userID
 	banned      map[string]map[string]struct{}   // roomID → set of banned userIDs
 	bannedIPs   map[string]map[string]struct{}   // roomID → set of banned IPs
-	muted       map[string]map[string]struct{}   // roomID → set of muted userIDs
+	muted       map[string]map[string]time.Time  // roomID → userID → mute-expires-at (zero = permanent)
 	kicked      map[string]map[string]time.Time  // roomID → userID → rejoin-allowed-at
 	conns       *ConnManager
 	messages    message.MessageStore
@@ -53,7 +53,7 @@ func NewHub(onJoin func(roomID string, delta int)) *Hub {
 		hosts:     make(map[string]string),
 		banned:    make(map[string]map[string]struct{}),
 		bannedIPs: make(map[string]map[string]struct{}),
-		muted:     make(map[string]map[string]struct{}),
+		muted:     make(map[string]map[string]time.Time),
 		kicked:    make(map[string]map[string]time.Time),
 		conns:  NewConnManager(),
 		onJoin: onJoin,
@@ -134,8 +134,10 @@ type BanPayload struct {
 }
 
 // MutePayload is sent by a room creator to mute/unmute a user.
+// Duration is in seconds; 0 means permanent (until manually unmuted).
 type MutePayload struct {
-	UserID string `json:"user_id"`
+	UserID   string `json:"user_id"`
+	Duration int    `json:"duration,omitempty"` // seconds
 }
 
 // SetUsernamePayload is sent by the client to change their username in the room.
@@ -432,27 +434,41 @@ func (h *Hub) Kick(roomID, userID string) {
 	h.mu.Unlock()
 }
 
-// IsMuted returns true if the user is muted in the room.
+// IsMuted returns true if the user is currently muted in the room.
+// Expired timed mutes are cleaned up automatically.
 func (h *Hub) IsMuted(roomID, userID string) bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	_, ok := h.muted[roomID][userID]
-	return ok
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	expiresAt, ok := h.muted[roomID][userID]
+	if !ok {
+		return false
+	}
+	if !expiresAt.IsZero() && time.Now().After(expiresAt) {
+		delete(h.muted[roomID], userID)
+		return false
+	}
+	return true
 }
 
-// Mute toggles a user's mute status in the room. Returns true if the user
-// is muted after the call.
-func (h *Hub) Mute(roomID, userID string) bool {
+// Mute toggles a user's mute status in the room. If duration is positive,
+// the mute expires after that duration. If duration is zero, the mute is
+// permanent (until manually unmuted). Returns true if the user is muted
+// after the call.
+func (h *Hub) Mute(roomID, userID string, duration time.Duration) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.muted[roomID] == nil {
-		h.muted[roomID] = make(map[string]struct{})
+		h.muted[roomID] = make(map[string]time.Time)
 	}
 	if _, ok := h.muted[roomID][userID]; ok {
 		delete(h.muted[roomID], userID)
 		return false
 	}
-	h.muted[roomID][userID] = struct{}{}
+	var expiresAt time.Time
+	if duration > 0 {
+		expiresAt = time.Now().Add(duration)
+	}
+	h.muted[roomID][userID] = expiresAt
 	return true
 }
 

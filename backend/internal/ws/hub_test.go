@@ -471,3 +471,69 @@ func TestHubDisconnectRoomClearsKicked(t *testing.T) {
 		t.Error("expected kicked map to be cleared after DisconnectRoom")
 	}
 }
+
+func TestHubMuteAndIsMuted(t *testing.T) {
+	hub := NewHub(nil)
+
+	// Not muted initially.
+	if hub.IsMuted("room1", "user1") {
+		t.Error("expected user1 to not be muted initially")
+	}
+
+	// Mute user1 permanently (duration=0).
+	if !hub.Mute("room1", "user1", 0) {
+		t.Error("expected Mute to return true (muted)")
+	}
+	if !hub.IsMuted("room1", "user1") {
+		t.Error("expected user1 to be muted after Mute()")
+	}
+
+	// Different room should not be affected.
+	if hub.IsMuted("room2", "user1") {
+		t.Error("expected user1 to not be muted in room2")
+	}
+
+	// Toggle unmute.
+	if hub.Mute("room1", "user1", 0) {
+		t.Error("expected Mute to return false (unmuted)")
+	}
+	if hub.IsMuted("room1", "user1") {
+		t.Error("expected user1 to not be muted after toggle")
+	}
+}
+
+func TestHubTimedMuteExpires(t *testing.T) {
+	hub := NewHub(nil)
+
+	// Mute user1 with a duration.
+	if !hub.Mute("room1", "user1", 5*time.Minute) {
+		t.Error("expected Mute to return true (muted)")
+	}
+	if !hub.IsMuted("room1", "user1") {
+		t.Error("expected user1 to be muted")
+	}
+
+	// Manually expire the mute.
+	hub.mu.Lock()
+	hub.muted["room1"]["user1"] = time.Now().Add(-1 * time.Second)
+	hub.mu.Unlock()
+
+	if hub.IsMuted("room1", "user1") {
+		t.Error("expected timed mute to be expired")
+	}
+}
+
+func TestHubDisconnectRoomClearsMuted(t *testing.T) {
+	hub := NewHub(nil)
+
+	hub.Mute("room1", "user1", 0)
+	if !hub.IsMuted("room1", "user1") {
+		t.Fatal("expected user1 to be muted")
+	}
+
+	hub.DisconnectRoom("room1")
+
+	if hub.IsMuted("room1", "user1") {
+		t.Error("expected muted map to be cleared after DisconnectRoom")
+	}
+}

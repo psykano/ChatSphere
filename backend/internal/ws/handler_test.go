@@ -3052,3 +3052,142 @@ func TestHandlerKickExpiresAfterDuration(t *testing.T) {
 	defer conn3.Close(websocket.StatusNormalClosure, "")
 	waitForClients(t, hub, "room1", 2)
 }
+
+func TestHandlerTimedMute(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice mutes Bob for 300 seconds (5 minutes).
+	sendEnvelope(t, conn1, "mute", MutePayload{UserID: sp2.UserID, Duration: 300})
+
+	// Both should receive "bob was muted for 5 minutes" system message.
+	env1, msg1 := readMessage(t, conn1)
+	if env1.Type != "system" {
+		t.Errorf("expected type 'system', got %q", env1.Type)
+	}
+	if msg1.Action != message.ActionMute {
+		t.Errorf("expected action 'mute', got %q", msg1.Action)
+	}
+	if !strings.Contains(msg1.Content, "5 minutes") {
+		t.Errorf("expected '5 minutes' in content, got %q", msg1.Content)
+	}
+
+	env2, _ := readMessage(t, conn2)
+	if env2.Type != "system" {
+		t.Errorf("bob should receive system mute message, got %q", env2.Type)
+	}
+
+	// Bob tries to send a chat — should fail.
+	sendEnvelope(t, conn2, "chat", ChatPayload{Content: "hello"})
+	envErr, _ := readMessage(t, conn2)
+	if envErr.Type != "error" {
+		t.Errorf("expected error for muted user, got %q", envErr.Type)
+	}
+}
+
+func TestHandlerTimedMuteExpires(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice mutes Bob for 60 seconds.
+	sendEnvelope(t, conn1, "mute", MutePayload{UserID: sp2.UserID, Duration: 60})
+	drainSystemMessages(t, conn1, 1) // "bob was muted"
+	drainSystemMessages(t, conn2, 1) // "bob was muted"
+
+	// Manually expire the mute.
+	hub.mu.Lock()
+	hub.muted["room1"][sp2.UserID] = time.Now().Add(-1 * time.Second)
+	hub.mu.Unlock()
+
+	// Bob should now be able to send messages.
+	sendEnvelope(t, conn2, "chat", ChatPayload{Content: "I can talk again"})
+	envChat, msgChat := readMessage(t, conn2)
+	if envChat.Type != "chat" {
+		t.Errorf("expected bob's message to succeed after mute expired, got %q", envChat.Type)
+	}
+	if msgChat.Content != "I can talk again" {
+		t.Errorf("expected 'I can talk again', got %q", msgChat.Content)
+	}
+}
+
+func TestHandlerMuteNegativeDuration(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn1, sp := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn1, 1) // history
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	_ = sp // alice is host
+
+	// Alice tries to mute Bob with negative duration.
+	sendEnvelope(t, conn1, "mute", MutePayload{UserID: sp2.UserID, Duration: -10})
+	envErr, _ := readMessage(t, conn1)
+	if envErr.Type != "error" {
+		t.Errorf("expected error for negative duration, got %q", envErr.Type)
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "0 seconds"},
+		{30 * time.Second, "30 seconds"},
+		{1 * time.Second, "1 second"},
+		{1 * time.Minute, "1 minute"},
+		{5 * time.Minute, "5 minutes"},
+		{90 * time.Second, "1 minute 30 seconds"},
+		{1 * time.Hour, "1 hour"},
+		{2 * time.Hour, "2 hours"},
+		{61 * time.Minute, "1 hour 1 minute"},
+		{90 * time.Minute, "1 hour 30 minutes"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%v", tt.d), func(t *testing.T) {
+			got := formatDuration(tt.d)
+			if got != tt.want {
+				t.Errorf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
+			}
+		})
+	}
+}
