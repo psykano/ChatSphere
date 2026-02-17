@@ -1,11 +1,14 @@
+import { CreateRoomForm } from "@/components/create-room-form";
 import { EnterCodeBar } from "@/components/enter-code-bar";
 import { RoomCard } from "@/components/room-card";
+import { useCreateRoom } from "@/hooks/use-create-room";
 import { useJoinByCode } from "@/hooks/use-join-by-code";
 import { useRooms } from "@/hooks/use-rooms";
 
 function App() {
-  const { rooms, loading, error } = useRooms();
+  const { rooms, loading, error, refresh } = useRooms();
   const { joinByCode, loading: joining, error: joinError } = useJoinByCode();
+  const { createRoom, loading: creating, error: createError } = useCreateRoom();
 
   return (
     <div className="mx-auto flex min-h-screen max-w-2xl flex-col px-4 py-8">
@@ -15,6 +18,17 @@ function App() {
           Real-time anonymous chat rooms
         </p>
       </header>
+
+      <section className="mb-6" aria-label="Create a room">
+        <CreateRoomForm
+          onSubmit={async (input) => {
+            const room = await createRoom(input);
+            if (room) refresh();
+          }}
+          loading={creating}
+          error={createError}
+        />
+      </section>
 
       <section className="mb-6" aria-label="Join private room">
         <EnterCodeBar onJoin={joinByCode} loading={joining} error={joinError} />
