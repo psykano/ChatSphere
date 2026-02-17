@@ -8,6 +8,7 @@ import { MessageInput } from "@/components/message-input";
 import { TypingIndicator } from "@/components/typing-indicator";
 import { UsernameInput } from "@/components/username-input";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { ConnectionStatusBanner } from "@/components/connection-status-banner";
 import { isSameUserAsPrevious } from "@/lib/message-grouping";
 
 interface ChatLayoutProps {
@@ -119,6 +120,9 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
             <ThemeToggle />
           </div>
         </header>
+
+        {/* Connection status banner */}
+        <ConnectionStatusBanner connectionState={connectionState} />
 
         {/* Username input bar */}
         {!username && (
