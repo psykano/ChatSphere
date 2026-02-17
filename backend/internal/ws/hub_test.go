@@ -422,3 +422,52 @@ func TestHubBroadcastPresence(t *testing.T) {
 		t.Errorf("unexpected user: %+v", payload.Users[0])
 	}
 }
+
+func TestHubKickAndIsKicked(t *testing.T) {
+	hub := NewHub(nil)
+
+	// Not kicked initially.
+	if hub.IsKicked("room1", "user1") {
+		t.Error("expected user1 to not be kicked initially")
+	}
+
+	// Kick user1.
+	hub.Kick("room1", "user1")
+	if !hub.IsKicked("room1", "user1") {
+		t.Error("expected user1 to be kicked after Kick()")
+	}
+
+	// Different room should not be affected.
+	if hub.IsKicked("room2", "user1") {
+		t.Error("expected user1 to not be kicked in room2")
+	}
+
+	// Different user should not be affected.
+	if hub.IsKicked("room1", "user2") {
+		t.Error("expected user2 to not be kicked in room1")
+	}
+
+	// Manually expire the kick.
+	hub.mu.Lock()
+	hub.kicked["room1"]["user1"] = time.Now().Add(-1 * time.Second)
+	hub.mu.Unlock()
+
+	if hub.IsKicked("room1", "user1") {
+		t.Error("expected user1 kick to be expired")
+	}
+}
+
+func TestHubDisconnectRoomClearsKicked(t *testing.T) {
+	hub := NewHub(nil)
+
+	hub.Kick("room1", "user1")
+	if !hub.IsKicked("room1", "user1") {
+		t.Fatal("expected user1 to be kicked")
+	}
+
+	hub.DisconnectRoom("room1")
+
+	if hub.IsKicked("room1", "user1") {
+		t.Error("expected kicked map to be cleared after DisconnectRoom")
+	}
+}

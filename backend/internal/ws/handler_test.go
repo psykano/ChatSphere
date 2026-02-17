@@ -2718,3 +2718,147 @@ func TestHandlerSetUsernameSameNoOp(t *testing.T) {
 		t.Errorf("expected content 'ping', got %q", msg.Content)
 	}
 }
+
+func TestHandlerKickBlocksRejoin(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (becomes host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice kicks Bob.
+	sendEnvelope(t, conn1, "kick", KickPayload{UserID: sp2.UserID})
+
+	// Drain the "bob was kicked" system message.
+	drainSystemMessages(t, conn1, 1)
+
+	// Bob should be disconnected.
+	waitForClients(t, hub, "room1", 1)
+
+	// Bob tries to rejoin with his session — should be rejected.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	conn3, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial error: %v", err)
+	}
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+
+	payload, _ := json.Marshal(JoinPayload{RoomID: "room1", Username: "bob", SessionID: sp2.SessionID})
+	joinEnv, _ := json.Marshal(Envelope{Type: "join", Payload: payload})
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer writeCancel()
+	if err := conn3.Write(writeCtx, websocket.MessageText, joinEnv); err != nil {
+		t.Fatalf("write join error: %v", err)
+	}
+
+	// Should be rejected with close.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	_, _, err = conn3.Read(readCtx)
+	if err == nil {
+		t.Fatal("expected kicked user to be rejected on rejoin")
+	}
+
+	// Room should still have only Alice.
+	if hub.ClientCount("room1") != 1 {
+		t.Errorf("expected 1 client after rejected rejoin, got %d", hub.ClientCount("room1"))
+	}
+}
+
+func TestHandlerKickBlocksRejoinWithoutSession(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (becomes host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Set up user sessions so Bob has a persistent identity via cookie.
+	userSessions := user.NewSessionStore()
+	bobSession := userSessions.Create()
+	// Override the generated UserID to match Bob's WebSocket identity.
+	bobSession.UserID = sp2.UserID
+	ts.Config.Handler.(*Handler).SetUserSessions(userSessions, "chatsphere_session")
+
+	// Alice kicks Bob.
+	sendEnvelope(t, conn1, "kick", KickPayload{UserID: sp2.UserID})
+	drainSystemMessages(t, conn1, 1)
+	waitForClients(t, hub, "room1", 1)
+
+	// Bob tries to rejoin without session_id but with the same cookie identity.
+	conn3 := dialWSWithCookie(t, ts.URL, "chatsphere_session", bobSession.Token)
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+
+	payload, _ := json.Marshal(JoinPayload{RoomID: "room1", Username: "bob"})
+	joinEnv, _ := json.Marshal(Envelope{Type: "join", Payload: payload})
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer writeCancel()
+	if err := conn3.Write(writeCtx, websocket.MessageText, joinEnv); err != nil {
+		t.Fatalf("write join error: %v", err)
+	}
+
+	// Should be rejected.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	_, _, err := conn3.Read(readCtx)
+	if err == nil {
+		t.Fatal("expected kicked user to be rejected on rejoin without session")
+	}
+}
+
+func TestHandlerKickExpiresAfterDuration(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins first (becomes host).
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn1, 1) // "alice joined"
+
+	// Bob joins.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn2, 1) // history
+	waitForClients(t, hub, "room1", 2)
+	drainSystemMessages(t, conn1, 1) // "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice kicks Bob.
+	sendEnvelope(t, conn1, "kick", KickPayload{UserID: sp2.UserID})
+	drainSystemMessages(t, conn1, 1) // "bob was kicked"
+	waitForClients(t, hub, "room1", 1)
+
+	// Manually expire the kick by setting the expiry to the past.
+	hub.mu.Lock()
+	hub.kicked["room1"][sp2.UserID] = time.Now().Add(-1 * time.Second)
+	hub.mu.Unlock()
+
+	// Bob should now be able to rejoin.
+	conn3 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn3.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 2)
+}

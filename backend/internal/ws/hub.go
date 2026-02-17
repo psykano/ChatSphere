@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/christopherjohns/chatsphere/internal/message"
 	"nhooyr.io/websocket"
 )
+
+// kickDuration is how long a kicked user is blocked from rejoining.
+const kickDuration = 15 * time.Minute
 
 // Client represents a connected WebSocket user.
 type Client struct {
@@ -31,6 +35,7 @@ type Hub struct {
 	hosts       map[string]string               // roomID → host userID
 	banned      map[string]map[string]struct{}   // roomID → set of banned userIDs
 	muted       map[string]map[string]struct{}   // roomID → set of muted userIDs
+	kicked      map[string]map[string]time.Time  // roomID → userID → rejoin-allowed-at
 	conns       *ConnManager
 	messages    message.MessageStore
 	sessions    *SessionStore
@@ -46,6 +51,7 @@ func NewHub(onJoin func(roomID string, delta int)) *Hub {
 		hosts:  make(map[string]string),
 		banned: make(map[string]map[string]struct{}),
 		muted:  make(map[string]map[string]struct{}),
+		kicked: make(map[string]map[string]time.Time),
 		conns:  NewConnManager(),
 		onJoin: onJoin,
 	}
@@ -323,6 +329,7 @@ func (h *Hub) DisconnectRoom(roomID string) {
 	delete(h.hosts, roomID)
 	delete(h.banned, roomID)
 	delete(h.muted, roomID)
+	delete(h.kicked, roomID)
 	h.mu.Unlock()
 
 	for _, c := range targets {
@@ -379,6 +386,27 @@ func (h *Hub) Ban(roomID, userID string) {
 		h.banned[roomID] = make(map[string]struct{})
 	}
 	h.banned[roomID][userID] = struct{}{}
+	h.mu.Unlock()
+}
+
+// IsKicked returns true if the user is temporarily blocked from rejoining the room.
+func (h *Hub) IsKicked(roomID, userID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	expiry, ok := h.kicked[roomID][userID]
+	if !ok {
+		return false
+	}
+	return time.Now().Before(expiry)
+}
+
+// Kick adds a user to the room's temporary kick list for kickDuration.
+func (h *Hub) Kick(roomID, userID string) {
+	h.mu.Lock()
+	if h.kicked[roomID] == nil {
+		h.kicked[roomID] = make(map[string]time.Time)
+	}
+	h.kicked[roomID][userID] = time.Now().Add(kickDuration)
 	h.mu.Unlock()
 }
 

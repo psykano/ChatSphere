@@ -162,14 +162,24 @@ func (h *Handler) handleJoin(ctx context.Context, client *Client) bool {
 		}
 	}
 
-	// Check if the user is banned from this room (by session).
+	// Check if the user is banned or kicked from this room (by session).
 	if payload.SessionID != "" {
 		if sess := h.sessions.Get(payload.SessionID); sess != nil {
 			if h.hub.IsBanned(payload.RoomID, sess.UserID) {
 				closeWithError(client.conn, "you are banned from this room")
 				return false
 			}
+			if h.hub.IsKicked(payload.RoomID, sess.UserID) {
+				closeWithError(client.conn, "you are temporarily blocked from this room")
+				return false
+			}
 		}
+	}
+
+	// Also check kick status by the connection's userID (from cookie).
+	if h.hub.IsKicked(payload.RoomID, client.userID) {
+		closeWithError(client.conn, "you are temporarily blocked from this room")
+		return false
 	}
 
 	// Attempt session resumption.
@@ -509,6 +519,7 @@ func (h *Handler) handleKick(ctx context.Context, client *Client, payload json.R
 		h.sendError(ctx, client, "user not found in room")
 		return
 	}
+	h.hub.Kick(client.roomID, p.UserID)
 	h.hub.Broadcast(client.roomID, &message.Message{
 		ID:        generateClientID(),
 		RoomID:    client.roomID,
