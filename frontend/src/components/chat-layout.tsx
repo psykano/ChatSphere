@@ -4,6 +4,7 @@ import { useChat } from "@/hooks/use-chat";
 import { ChatSidebar } from "@/components/chat-sidebar";
 import { MessageBubble } from "@/components/message-bubble";
 import { MessageInput } from "@/components/message-input";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 interface ChatLayoutProps {
   room: Room;
@@ -81,6 +82,9 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
           <span className="ml-3 text-sm text-muted-foreground">
             {onlineUsers.length} online
           </span>
+          <div className="ml-auto">
+            <ThemeToggle />
+          </div>
         </header>
 
         {/* Messages area */}

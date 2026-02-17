@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import App from "./App";
+import { ThemeProvider } from "@/hooks/use-theme";
 
 function mockFetchRooms(rooms: unknown[]) {
   vi.spyOn(globalThis, "fetch").mockResolvedValue({
@@ -30,7 +31,7 @@ describe("App", () => {
 
   it("renders the heading", async () => {
     mockFetchRooms([]);
-    render(<App />);
+    render(<ThemeProvider><App /></ThemeProvider>);
     expect(
       screen.getByRole("heading", { name: /chatsphere/i })
     ).toBeInTheDocument();
@@ -38,7 +39,7 @@ describe("App", () => {
 
   it("renders the description", async () => {
     mockFetchRooms([]);
-    render(<App />);
+    render(<ThemeProvider><App /></ThemeProvider>);
     expect(
       screen.getByText(/real-time anonymous chat rooms/i)
     ).toBeInTheDocument();
@@ -46,13 +47,13 @@ describe("App", () => {
 
   it("shows loading state initially", () => {
     vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise(() => {}));
-    render(<App />);
+    render(<ThemeProvider><App /></ThemeProvider>);
     expect(screen.getByText(/loading rooms/i)).toBeInTheDocument();
   });
 
   it("shows empty state when no rooms", async () => {
     mockFetchRooms([]);
-    render(<App />);
+    render(<ThemeProvider><App /></ThemeProvider>);
     expect(
       await screen.findByText(/no public rooms yet/i)
     ).toBeInTheDocument();
@@ -76,7 +77,7 @@ describe("App", () => {
         created_at: "2026-01-01T00:00:00Z",
       },
     ]);
-    render(<App />);
+    render(<ThemeProvider><App /></ThemeProvider>);
     expect(await screen.findByText("General")).toBeInTheDocument();
     expect(screen.getByText("Gaming")).toBeInTheDocument();
     expect(screen.getByText("Main chat")).toBeInTheDocument();
@@ -87,7 +88,7 @@ describe("App", () => {
       ok: false,
       status: 500,
     } as Response);
-    render(<App />);
+    render(<ThemeProvider><App /></ThemeProvider>);
     expect(
       await screen.findByText(/failed to fetch rooms: 500/i)
     ).toBeInTheDocument();
@@ -117,7 +118,7 @@ describe("App", () => {
       } as Response;
     });
 
-    render(<App />);
+    render(<ThemeProvider><App /></ThemeProvider>);
     await screen.findByText(/no public rooms yet/i);
 
     await user.type(screen.getByLabelText("Room name"), "Secret Room");
@@ -152,7 +153,7 @@ describe("App", () => {
       } as Response;
     });
 
-    render(<App />);
+    render(<ThemeProvider><App /></ThemeProvider>);
     await screen.findByText(/no public rooms yet/i);
 
     await user.type(screen.getByLabelText("Room name"), "Public Room");
@@ -185,7 +186,7 @@ describe("App", () => {
       } as Response;
     });
 
-    render(<App />);
+    render(<ThemeProvider><App /></ThemeProvider>);
     await screen.findByText(/no public rooms yet/i);
 
     await user.type(screen.getByLabelText("Room name"), "Secret Room");
@@ -211,7 +212,7 @@ describe("App", () => {
         created_at: "2026-01-01T00:00:00Z",
       },
     ]);
-    render(<App />);
+    render(<ThemeProvider><App /></ThemeProvider>);
     await screen.findByText("General");
     await user.click(screen.getByRole("button", { name: /general/i }));
 

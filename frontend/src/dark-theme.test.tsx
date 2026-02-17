@@ -2,46 +2,47 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
-describe("Dark theme configuration", () => {
+describe("Theme configuration", () => {
   const css = readFileSync(resolve(__dirname, "index.css"), "utf-8");
   const html = readFileSync(resolve(__dirname, "../index.html"), "utf-8");
 
-  it("sets color-scheme: dark on :root", () => {
-    expect(css).toMatch(/color-scheme:\s*dark/);
+  it("sets color-scheme: light on :root for light theme defaults", () => {
+    expect(css).toMatch(/color-scheme:\s*light/);
   });
 
-  it("does not define a dark variant (dark-only theme)", () => {
-    expect(css).not.toContain("@custom-variant dark");
+  it("sets color-scheme: dark in .dark selector", () => {
+    expect(css).toMatch(/\.dark\s*\{[^}]*color-scheme:\s*dark/s);
   });
 
-  it("defines dark background color in :root", () => {
-    // oklch(0.145 0 0) is near-black
-    expect(css).toMatch(/--background:\s*oklch\(0\.145/);
+  it("defines light background color in :root", () => {
+    expect(css).toMatch(/:root\s*\{[^}]*--background:\s*oklch\(1 /s);
   });
 
-  it("defines light foreground color in :root", () => {
-    // oklch(0.985 0 0) is near-white
-    expect(css).toMatch(/--foreground:\s*oklch\(0\.985/);
+  it("defines dark foreground color in :root", () => {
+    expect(css).toMatch(/:root\s*\{[^}]*--foreground:\s*oklch\(0\.145/s);
   });
 
-  it("has dark class on html element", () => {
+  it("defines dark background color in .dark", () => {
+    expect(css).toMatch(/\.dark\s*\{[^}]*--background:\s*oklch\(0\.145/s);
+  });
+
+  it("defines light foreground color in .dark", () => {
+    expect(css).toMatch(/\.dark\s*\{[^}]*--foreground:\s*oklch\(0\.985/s);
+  });
+
+  it("has dark class on html element by default", () => {
     expect(html).toMatch(/<html[^>]*class="[^"]*dark[^"]*"/);
   });
 
-  it("has color-scheme meta tag set to dark", () => {
+  it("has color-scheme meta tag supporting both themes", () => {
     expect(html).toMatch(
-      /<meta\s+name="color-scheme"\s+content="dark"\s*\/?>/
+      /<meta\s+name="color-scheme"\s+content="dark light"\s*\/?>/
     );
   });
 
   it("applies bg-background and text-foreground to body", () => {
     expect(css).toContain("bg-background");
     expect(css).toContain("text-foreground");
-  });
-
-  it("does not contain a light theme or :root override for light mode", () => {
-    expect(css).not.toMatch(/\.light\s*\{/);
-    expect(css).not.toMatch(/@media\s*\(\s*prefers-color-scheme:\s*light\s*\)/);
   });
 
   it("maps Tailwind theme colors to CSS variables", () => {

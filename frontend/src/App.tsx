@@ -5,6 +5,7 @@ import { EnterCodeBar } from "@/components/enter-code-bar";
 import { RoomCard } from "@/components/room-card";
 import type { Room } from "@/components/room-card";
 import { RoomCodeDialog } from "@/components/room-code-dialog";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { useCreateRoom } from "@/hooks/use-create-room";
 import { useJoinByCode } from "@/hooks/use-join-by-code";
 import { useRooms } from "@/hooks/use-rooms";
@@ -30,7 +31,10 @@ function App() {
 
   return (
     <div className="mx-auto flex min-h-screen max-w-2xl flex-col px-4 py-8">
-      <header className="mb-8 text-center">
+      <header className="relative mb-8 text-center">
+        <div className="absolute right-0 top-0">
+          <ThemeToggle />
+        </div>
         <h1 className="text-4xl font-bold tracking-tight">ChatSphere</h1>
         <p className="mt-2 text-muted-foreground">
           Real-time anonymous chat rooms
