@@ -97,6 +97,9 @@ type ErrorPayload struct {
 // maxMessageLength is the maximum allowed length for a chat message.
 const maxMessageLength = 2000
 
+// maxUsernameLength is the maximum allowed length for a username.
+const maxUsernameLength = 30
+
 // addClient registers a client in its room and starts its write pump.
 // Returns a context that is cancelled when the client is removed.
 func (h *Hub) addClient(c *Client) context.Context {

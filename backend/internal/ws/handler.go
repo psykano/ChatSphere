@@ -143,8 +143,13 @@ func (h *Handler) handleJoin(ctx context.Context, client *Client) bool {
 	}
 
 	if !resumed {
+		payload.Username = strings.TrimSpace(payload.Username)
 		if payload.Username == "" {
 			payload.Username = "anon-" + client.userID[:6]
+		}
+		if len(payload.Username) > maxUsernameLength {
+			closeWithError(client.conn, "username must be 30 characters or less")
+			return false
 		}
 		client.roomID = payload.RoomID
 		client.username = payload.Username
@@ -346,6 +351,8 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 				Type:      message.TypeChat,
 				CreatedAt: time.Now(),
 			})
+		case "leave":
+			return
 		}
 	}
 }

@@ -1377,3 +1377,171 @@ func drainSystemMessages(t *testing.T, conn *websocket.Conn, n int) {
 		}
 	}
 }
+
+func TestHandlerLeaveMessage(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Two clients join the same room.
+	conn1 := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hub.ClientCount("room1") != 2 {
+		t.Fatalf("expected 2 clients, got %d", hub.ClientCount("room1"))
+	}
+
+	// Drain system messages.
+	drainSystemMessages(t, conn1, 2) // "alice joined", "bob joined"
+	drainSystemMessages(t, conn2, 1) // "bob joined"
+
+	// Alice sends an explicit leave message.
+	leaveEnv, _ := json.Marshal(Envelope{Type: "leave", Payload: json.RawMessage(`{}`)})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn1.Write(ctx, websocket.MessageText, leaveEnv); err != nil {
+		t.Fatalf("write leave error: %v", err)
+	}
+
+	// Bob should receive "alice left" system message.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn2.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	var msg message.Message
+	json.Unmarshal(env.Payload, &msg)
+
+	if msg.Type != message.TypeSystem {
+		t.Errorf("expected system message, got %q", msg.Type)
+	}
+	if !strings.Contains(msg.Content, "left") {
+		t.Errorf("expected 'left' in content, got %q", msg.Content)
+	}
+	if msg.Username != "alice" {
+		t.Errorf("expected username 'alice', got %q", msg.Username)
+	}
+
+	// Client count should decrease.
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hub.ClientCount("room1") != 1 {
+		t.Fatalf("expected 1 client after leave, got %d", hub.ClientCount("room1"))
+	}
+}
+
+func TestHandlerLeaveAllowsSessionResumption(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Alice joins and gets a session.
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	drainSystemMessages(t, conn1, 2) // history + "alice joined"
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Alice sends explicit leave.
+	leaveEnv, _ := json.Marshal(Envelope{Type: "leave", Payload: json.RawMessage(`{}`)})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn1.Write(ctx, websocket.MessageText, leaveEnv); err != nil {
+		t.Fatalf("write leave error: %v", err)
+	}
+
+	// Wait for cleanup.
+	deadline = time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Alice should be able to resume the session.
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "", sp1.SessionID)
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	if !sp2.Resumed {
+		t.Fatal("expected session to be resumed after explicit leave")
+	}
+	if sp2.Username != "alice" {
+		t.Errorf("expected username 'alice', got %q", sp2.Username)
+	}
+}
+
+func TestHandlerJoinUsernameTooLong(t *testing.T) {
+	ts, _, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial error: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	longUsername := strings.Repeat("a", maxUsernameLength+1)
+	payload, _ := json.Marshal(JoinPayload{RoomID: "room1", Username: longUsername})
+	env, _ := json.Marshal(Envelope{Type: "join", Payload: payload})
+
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer writeCancel()
+	if err := conn.Write(writeCtx, websocket.MessageText, env); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	// Connection should be closed with policy violation.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	_, _, err = conn.Read(readCtx)
+	if err == nil {
+		t.Fatal("expected connection to be closed for too-long username")
+	}
+}
+
+func TestHandlerJoinUsernameAtMaxLength(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	exactUsername := strings.Repeat("a", maxUsernameLength)
+	conn := dialAndJoin(t, ts.URL, "room1", exactUsername)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if hub.ClientCount("room1") != 1 {
+		t.Fatalf("expected 1 client, got %d", hub.ClientCount("room1"))
+	}
+}
+
+func TestHandlerJoinUsernameTrimmed(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn, sp := dialJoinAndReadSession(t, ts.URL, "room1", "  alice  ", "")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if sp.Username != "alice" {
+		t.Errorf("expected trimmed username 'alice', got %q", sp.Username)
+	}
+}
