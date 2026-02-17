@@ -90,4 +90,14 @@ describe("isSameUserAsPrevious", () => {
     ];
     expect(isSameUserAsPrevious(messages, 2)).toBe(false);
   });
+
+  it("breaks grouping when a gap message interjects", () => {
+    const messages = [
+      makeMessage({ id: "1", user_id: "user-1" }),
+      makeMessage({ id: "gap-1", type: "gap", user_id: undefined, content: "Some messages may be missing" }),
+      makeMessage({ id: "3", user_id: "user-1" }),
+    ];
+    expect(isSameUserAsPrevious(messages, 1)).toBe(false);
+    expect(isSameUserAsPrevious(messages, 2)).toBe(false);
+  });
 });

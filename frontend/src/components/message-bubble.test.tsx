@@ -86,4 +86,16 @@ describe("MessageBubble", () => {
     render(<MessageBubble message={makeMessage()} isOwn={false} showUsername={true} />);
     expect(screen.getByText("Alice")).toBeInTheDocument();
   });
+
+  it("renders gap message as a separator with text", () => {
+    render(
+      <MessageBubble
+        message={makeMessage({ type: "gap", content: "Some messages may be missing" })}
+        isOwn={false}
+      />,
+    );
+    const el = screen.getByText("Some messages may be missing");
+    expect(el).toBeInTheDocument();
+    expect(el.closest("[role='separator']")).toBeInTheDocument();
+  });
 });

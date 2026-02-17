@@ -13,6 +13,7 @@ export interface UseWebSocketOptions {
   username?: string;
   onMessage?: (envelope: Envelope) => void;
   onHistoryBatch?: (messages: BackfillMessage[], hasMore: boolean) => void;
+  onBackfillGap?: () => void;
   maxRetries?: number;
 }
 
@@ -35,6 +36,8 @@ export function useWebSocket(
   onMessageRef.current = opts.onMessage;
   const onHistoryBatchRef = useRef(opts.onHistoryBatch);
   onHistoryBatchRef.current = opts.onHistoryBatch;
+  const onBackfillGapRef = useRef(opts.onBackfillGap);
+  onBackfillGapRef.current = opts.onBackfillGap;
 
   useEffect(() => {
     const ws = new ReconnectingWS({
@@ -46,6 +49,7 @@ export function useWebSocket(
       onSession: setSession,
       onMessage: (env) => onMessageRef.current?.(env),
       onHistoryBatch: (msgs, hasMore) => onHistoryBatchRef.current?.(msgs, hasMore),
+      onBackfillGap: () => onBackfillGapRef.current?.(),
     });
     wsRef.current = ws;
     ws.connect();

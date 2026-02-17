@@ -129,6 +129,17 @@ export function useChat({ roomID, username }: UseChatOptions) {
     [],
   );
 
+  const handleBackfillGap = useCallback(() => {
+    const gapMessage: ChatMessage = {
+      id: `gap-${Date.now()}`,
+      room_id: roomID,
+      content: "Some messages may be missing",
+      type: "gap",
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, gapMessage]);
+  }, [roomID]);
+
   const wsURL = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
 
   const { state, session, send, fetchHistory, disconnect, retry } = useWebSocket({
@@ -137,6 +148,7 @@ export function useChat({ roomID, username }: UseChatOptions) {
     username,
     onMessage: handleMessage,
     onHistoryBatch: handleHistoryBatch,
+    onBackfillGap: handleBackfillGap,
   });
 
   const sendMessage = useCallback(

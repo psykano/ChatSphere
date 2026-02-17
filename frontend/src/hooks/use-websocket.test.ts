@@ -209,6 +209,78 @@ describe("useWebSocket", () => {
     );
   });
 
+  it("calls onBackfillGap when backfill has a gap", () => {
+    const onBackfillGap = vi.fn();
+    renderHook(() =>
+      useWebSocket({
+        url: "ws://localhost/ws",
+        roomID: "room1",
+        onBackfillGap,
+      }),
+    );
+
+    act(() => {
+      lastSocket().simulateOpen();
+      lastSocket().simulateMessage(sessionEnvelope);
+    });
+
+    act(() => {
+      lastSocket().simulateMessage({
+        type: "backfill",
+        payload: {
+          messages: [
+            {
+              id: "msg-1",
+              room_id: "room1",
+              content: "missed",
+              type: "chat",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          has_gap: true,
+        },
+      });
+    });
+
+    expect(onBackfillGap).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call onBackfillGap when backfill has no gap", () => {
+    const onBackfillGap = vi.fn();
+    renderHook(() =>
+      useWebSocket({
+        url: "ws://localhost/ws",
+        roomID: "room1",
+        onBackfillGap,
+      }),
+    );
+
+    act(() => {
+      lastSocket().simulateOpen();
+      lastSocket().simulateMessage(sessionEnvelope);
+    });
+
+    act(() => {
+      lastSocket().simulateMessage({
+        type: "backfill",
+        payload: {
+          messages: [
+            {
+              id: "msg-1",
+              room_id: "room1",
+              content: "missed",
+              type: "chat",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          has_gap: false,
+        },
+      });
+    });
+
+    expect(onBackfillGap).not.toHaveBeenCalled();
+  });
+
   it("disconnects on unmount", () => {
     const { unmount } = renderHook(() =>
       useWebSocket({ url: "ws://localhost/ws", roomID: "room1" }),

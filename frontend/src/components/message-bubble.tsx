@@ -19,6 +19,18 @@ export function MessageBubble({ message, isOwn, showUsername = true }: MessageBu
     message.type === "join" ||
     message.type === "leave";
 
+  if (message.type === "gap") {
+    return (
+      <div className="flex items-center gap-2 py-2" role="separator">
+        <div className="h-px flex-1 bg-border" />
+        <span className="text-xs text-muted-foreground">
+          {message.content}
+        </span>
+        <div className="h-px flex-1 bg-border" />
+      </div>
+    );
+  }
+
   if (isSystem) {
     return (
       <div className="flex justify-center py-1">
