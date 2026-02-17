@@ -1,11 +1,13 @@
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/hooks/use-chat";
 import { MarkdownContent } from "./markdown-content";
+import { UserContextMenu } from "./user-context-menu";
 
 interface MessageBubbleProps {
   message: ChatMessage;
   isOwn: boolean;
   showUsername?: boolean;
+  onMention?: (username: string) => void;
 }
 
 function formatTime(dateStr: string): string {
@@ -13,7 +15,7 @@ function formatTime(dateStr: string): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function MessageBubble({ message, isOwn, showUsername = true }: MessageBubbleProps) {
+export function MessageBubble({ message, isOwn, showUsername = true, onMention }: MessageBubbleProps) {
   const isSystem =
     message.type === "system" ||
     message.type === "join" ||
@@ -46,9 +48,11 @@ export function MessageBubble({ message, isOwn, showUsername = true }: MessageBu
       className={cn("flex flex-col gap-0.5 max-w-[85%] sm:max-w-[75%]", isOwn ? "ml-auto items-end" : "items-start")}
     >
       {!isOwn && message.username && showUsername && (
-        <span className="text-xs font-medium text-muted-foreground px-1">
-          {message.username}
-        </span>
+        <UserContextMenu username={message.username} onMention={onMention}>
+          <span className="text-xs font-medium text-muted-foreground px-1">
+            {message.username}
+          </span>
+        </UserContextMenu>
       )}
       <div
         className={cn(

@@ -1,9 +1,13 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useImperativeHandle, forwardRef } from "react";
 import { SendHorizontal } from "lucide-react";
 import { EmojiPicker } from "./emoji-picker";
 
 // Minimum interval between typing events (ms).
 const TYPING_THROTTLE = 2000;
+
+export interface MessageInputHandle {
+  insertText: (text: string) => void;
+}
 
 interface MessageInputProps {
   onSend: (content: string) => void;
@@ -12,10 +16,29 @@ interface MessageInputProps {
   readOnly?: boolean;
 }
 
-export function MessageInput({ onSend, onTyping, disabled, readOnly }: MessageInputProps) {
+export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(function MessageInput({ onSend, onTyping, disabled, readOnly }, ref) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastTypingSentRef = useRef(0);
+
+  useImperativeHandle(ref, () => ({
+    insertText(text: string) {
+      const textarea = textareaRef.current;
+      if (!textarea) {
+        setValue((prev) => prev + text);
+        return;
+      }
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const newValue = value.slice(0, start) + text + value.slice(end);
+      setValue(newValue);
+      requestAnimationFrame(() => {
+        const cursorPos = start + text.length;
+        textarea.setSelectionRange(cursorPos, cursorPos);
+        textarea.focus();
+      });
+    },
+  }), [value]);
 
   const emitTyping = useCallback(() => {
     if (!onTyping) return;
@@ -88,4 +111,4 @@ export function MessageInput({ onSend, onTyping, disabled, readOnly }: MessageIn
       </button>
     </form>
   );
-}
+});

@@ -4,7 +4,7 @@ import type { Room } from "@/components/room-card";
 import { useChat } from "@/hooks/use-chat";
 import { ChatSidebar } from "@/components/chat-sidebar";
 import { MessageBubble } from "@/components/message-bubble";
-import { MessageInput } from "@/components/message-input";
+import { MessageInput, type MessageInputHandle } from "@/components/message-input";
 import { TypingIndicator } from "@/components/typing-indicator";
 import { UsernameInput } from "@/components/username-input";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -40,6 +40,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
+  const messageInputRef = useRef<MessageInputHandle>(null);
 
   // Track unread messages when tab is hidden
   const prevUnreadCountRef = useRef(messages.length);
@@ -78,6 +79,10 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
   function handleLeave() {
     disconnect();
     onLeave();
+  }
+
+  function handleMention(mentionUsername: string) {
+    messageInputRef.current?.insertText(`@${mentionUsername} `);
   }
 
   function handleScroll() {
@@ -171,6 +176,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
                     message={msg}
                     isOwn={msg.user_id === session?.user_id}
                     showUsername={!grouped}
+                    onMention={handleMention}
                   />
                 </div>
               );
@@ -185,6 +191,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
 
         {/* Input bar */}
         <MessageInput
+          ref={messageInputRef}
           onSend={sendMessage}
           onTyping={sendTyping}
           disabled={connectionState !== "connected"}
