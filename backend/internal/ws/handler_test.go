@@ -2598,3 +2598,123 @@ func TestHandlerInvalidCookieGetsRandomID(t *testing.T) {
 		t.Error("expected non-empty user ID even with invalid cookie")
 	}
 }
+
+func TestHandlerSetUsername(t *testing.T) {
+	ts, hub, sessions := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	// Two clients join the same room.
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+	drainSystemMessages(t, conn1, 0) // drain history
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	conn1.Read(readCtx) // drain history envelope
+	readCancel()
+
+	conn2 := dialAndJoin(t, ts.URL, "room1", "bob")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	waitForClients(t, hub, "room1", 2)
+
+	// Drain system messages (alice sees "alice joined" + "bob joined", bob sees "bob joined").
+	drainSystemMessages(t, conn1, 2)
+	drainSystemMessages(t, conn2, 1)
+
+	// Alice changes her username.
+	sendEnvelope(t, conn1, "set_username", SetUsernamePayload{Username: "alice_new"})
+
+	// Both clients should receive the system message about the name change.
+	for _, conn := range []*websocket.Conn{conn1, conn2} {
+		env, msg := readMessage(t, conn)
+		if env.Type != "system" {
+			t.Errorf("expected type 'system', got %q", env.Type)
+		}
+		if msg.Action != message.ActionSetUsername {
+			t.Errorf("expected action 'set_username', got %q", msg.Action)
+		}
+		if msg.Username != "alice_new" {
+			t.Errorf("expected username 'alice_new', got %q", msg.Username)
+		}
+		if msg.Content != "alice is now known as alice_new" {
+			t.Errorf("unexpected content: %q", msg.Content)
+		}
+	}
+
+	// Verify the session was updated.
+	sess := sessions.Get(sp1.SessionID)
+	if sess.Username != "alice_new" {
+		t.Errorf("expected session username 'alice_new', got %q", sess.Username)
+	}
+
+	// Subsequent chat messages should use the new username.
+	sendEnvelope(t, conn1, "chat", ChatPayload{Content: "hello"})
+	for _, conn := range []*websocket.Conn{conn1, conn2} {
+		_, msg := readMessage(t, conn)
+		if msg.Username != "alice_new" {
+			t.Errorf("expected chat username 'alice_new', got %q", msg.Username)
+		}
+	}
+}
+
+func TestHandlerSetUsernameEmpty(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn, 1) // drain "alice joined"
+
+	// Try to set an empty username.
+	sendEnvelope(t, conn, "set_username", SetUsernamePayload{Username: ""})
+
+	// Should receive an error.
+	env, _ := readMessage(t, conn)
+	if env.Type != "error" {
+		t.Errorf("expected type 'error', got %q", env.Type)
+	}
+}
+
+func TestHandlerSetUsernameTooLong(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn, 1)
+
+	// Try to set a username that exceeds the max length.
+	longName := strings.Repeat("a", maxUsernameLength+1)
+	sendEnvelope(t, conn, "set_username", SetUsernamePayload{Username: longName})
+
+	env, _ := readMessage(t, conn)
+	if env.Type != "error" {
+		t.Errorf("expected type 'error', got %q", env.Type)
+	}
+}
+
+func TestHandlerSetUsernameSameNoOp(t *testing.T) {
+	ts, hub, _ := newHandlerTestServer(t, nil)
+	defer ts.Close()
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	waitForClients(t, hub, "room1", 1)
+	drainSystemMessages(t, conn, 1)
+
+	// Set username to the same value — should be a no-op.
+	sendEnvelope(t, conn, "set_username", SetUsernamePayload{Username: "alice"})
+
+	// Send a chat to verify no system message was generated.
+	sendEnvelope(t, conn, "chat", ChatPayload{Content: "ping"})
+
+	// The next message should be the chat, not a system message.
+	env, msg := readMessage(t, conn)
+	if env.Type != "chat" {
+		t.Errorf("expected type 'chat' (no-op for same username), got %q", env.Type)
+	}
+	if msg.Content != "ping" {
+		t.Errorf("expected content 'ping', got %q", msg.Content)
+	}
+}

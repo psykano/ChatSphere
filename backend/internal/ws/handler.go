@@ -470,6 +470,12 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 				continue
 			}
 			h.sendHistoryBatch(ctx, client, payload)
+		case "set_username":
+			var payload SetUsernamePayload
+			if err := json.Unmarshal(env.Payload, &payload); err != nil {
+				continue
+			}
+			h.handleSetUsername(ctx, client, payload)
 		case "typing":
 			h.hub.BroadcastEphemeral(client.roomID, client, &message.Message{
 				RoomID:   client.roomID,
@@ -584,6 +590,37 @@ func (h *Handler) handleMute(ctx context.Context, client *Client, payload json.R
 		Content:   content,
 		Type:      message.TypeSystem,
 		Action:    message.ActionMute,
+		CreatedAt: time.Now(),
+	})
+}
+
+// handleSetUsername updates a client's username in the current room.
+func (h *Handler) handleSetUsername(ctx context.Context, client *Client, payload SetUsernamePayload) {
+	newName := strings.TrimSpace(payload.Username)
+	if newName == "" {
+		h.sendError(ctx, client, "username cannot be empty")
+		return
+	}
+	if len(newName) > maxUsernameLength {
+		h.sendError(ctx, client, "username must be 30 characters or less")
+		return
+	}
+	if newName == client.username {
+		return
+	}
+
+	oldName := client.username
+	client.username = newName
+	h.sessions.SetUsername(client.sessionID, newName)
+
+	h.hub.Broadcast(client.roomID, &message.Message{
+		ID:        generateClientID(),
+		RoomID:    client.roomID,
+		UserID:    client.userID,
+		Username:  newName,
+		Content:   oldName + " is now known as " + newName,
+		Type:      message.TypeSystem,
+		Action:    message.ActionSetUsername,
 		CreatedAt: time.Now(),
 	})
 }

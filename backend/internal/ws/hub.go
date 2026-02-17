@@ -129,6 +129,11 @@ type MutePayload struct {
 	UserID string `json:"user_id"`
 }
 
+// SetUsernamePayload is sent by the client to change their username in the room.
+type SetUsernamePayload struct {
+	Username string `json:"username"`
+}
+
 // TypingPayload is broadcast by the server to indicate a user is typing.
 type TypingPayload struct {
 	UserID   string `json:"user_id"`

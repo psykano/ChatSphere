@@ -98,6 +98,15 @@ func (ss *SessionStore) SetLastMessageID(id, messageID string) {
 	}
 }
 
+// SetUsername updates the username for a session.
+func (ss *SessionStore) SetUsername(id, username string) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	if s, ok := ss.sessions[id]; ok {
+		s.Username = username
+	}
+}
+
 // Delete removes a session immediately.
 func (ss *SessionStore) Delete(id string) {
 	ss.mu.Lock()

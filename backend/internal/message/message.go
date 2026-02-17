@@ -20,7 +20,8 @@ const (
 	ActionKick       Action = "kick"
 	ActionBan        Action = "ban"
 	ActionMute       Action = "mute"
-	ActionExpiration Action = "expiration"
+	ActionExpiration   Action = "expiration"
+	ActionSetUsername  Action = "set_username"
 )
 
 // Message represents a chat message.
