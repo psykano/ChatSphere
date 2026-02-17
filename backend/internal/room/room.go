@@ -133,14 +133,25 @@ func generateID() string {
 }
 
 // generateCode returns a 6-character alphanumeric code for private rooms.
+// Uses rejection sampling to avoid modulo bias.
 func generateCode() string {
 	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	b := make([]byte, 6)
-	rand.Read(b)
-	for i := range b {
-		b[i] = charset[int(b[i])%len(charset)]
+	const maxUnbiased = 252 // largest multiple of 36 that fits in a byte (36*7=252)
+	code := make([]byte, 6)
+	buf := make([]byte, 12) // over-allocate to reduce Read calls
+	for i := 0; i < 6; {
+		rand.Read(buf)
+		for _, b := range buf {
+			if i >= 6 {
+				break
+			}
+			if b < maxUnbiased {
+				code[i] = charset[b%byte(len(charset))]
+				i++
+			}
+		}
 	}
-	return string(b)
+	return string(code)
 }
 
 // uniqueCode generates a code that doesn't collide with existing rooms.

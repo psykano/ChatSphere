@@ -161,6 +161,33 @@ func TestGenerateCode(t *testing.T) {
 	}
 }
 
+func TestGenerateCodeDistribution(t *testing.T) {
+	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	freq := make(map[byte]int)
+	const n = 10000
+	for i := 0; i < n; i++ {
+		code := generateCode()
+		for j := 0; j < len(code); j++ {
+			freq[code[j]]++
+		}
+	}
+
+	total := n * 6 // total characters generated
+	expected := float64(total) / float64(len(charset))
+
+	for i := 0; i < len(charset); i++ {
+		c := charset[i]
+		count := freq[c]
+		// Allow 30% deviation from expected — generous enough to avoid
+		// flakiness but catches obvious modulo bias.
+		lo := expected * 0.7
+		hi := expected * 1.3
+		if float64(count) < lo || float64(count) > hi {
+			t.Errorf("character %c: count %d outside expected range [%.0f, %.0f]", c, count, lo, hi)
+		}
+	}
+}
+
 func TestRoomExpiredByMessageInactivity(t *testing.T) {
 	m := NewManager()
 	r := m.Create("test", "", "user1", 50, true)
