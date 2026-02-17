@@ -11,6 +11,8 @@ export interface Room {
   name: string;
   description?: string;
   capacity: number;
+  public: boolean;
+  code?: string;
   active_users: number;
   creator_id?: string;
   last_message?: LastMessage;

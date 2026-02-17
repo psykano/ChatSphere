@@ -1,6 +1,9 @@
+import { useState } from "react";
 import { CreateRoomForm } from "@/components/create-room-form";
 import { EnterCodeBar } from "@/components/enter-code-bar";
 import { RoomCard } from "@/components/room-card";
+import type { Room } from "@/components/room-card";
+import { RoomCodeDialog } from "@/components/room-code-dialog";
 import { useCreateRoom } from "@/hooks/use-create-room";
 import { useJoinByCode } from "@/hooks/use-join-by-code";
 import { useRooms } from "@/hooks/use-rooms";
@@ -9,6 +12,7 @@ function App() {
   const { rooms, loading, error, refresh } = useRooms();
   const { joinByCode, loading: joining, error: joinError } = useJoinByCode();
   const { createRoom, loading: creating, error: createError } = useCreateRoom();
+  const [createdRoom, setCreatedRoom] = useState<Room | null>(null);
 
   return (
     <div className="mx-auto flex min-h-screen max-w-2xl flex-col px-4 py-8">
@@ -23,7 +27,12 @@ function App() {
         <CreateRoomForm
           onSubmit={async (input) => {
             const room = await createRoom(input);
-            if (room) refresh();
+            if (room) {
+              refresh();
+              if (!room.public && room.code) {
+                setCreatedRoom(room);
+              }
+            }
           }}
           loading={creating}
           error={createError}
@@ -57,6 +66,14 @@ function App() {
           </div>
         )}
       </main>
+
+      {createdRoom?.code && (
+        <RoomCodeDialog
+          roomName={createdRoom.name}
+          code={createdRoom.code}
+          onClose={() => setCreatedRoom(null)}
+        />
+      )}
     </div>
   );
 }
