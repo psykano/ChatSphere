@@ -140,6 +140,17 @@ type TypingPayload struct {
 	Username string `json:"username"`
 }
 
+// RoomUser describes an online user in a room.
+type RoomUser struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+}
+
+// PresencePayload is broadcast when a user joins or leaves a room.
+type PresencePayload struct {
+	Users []RoomUser `json:"users"`
+}
+
 // maxMessageLength is the maximum allowed length for a chat message.
 const maxMessageLength = 2000
 
@@ -266,6 +277,38 @@ func (h *Hub) BroadcastEphemeral(roomID string, sender *Client, msg *message.Mes
 	}
 }
 
+// BroadcastPresence sends the current user list to all clients in a room.
+func (h *Hub) BroadcastPresence(roomID string) {
+	h.mu.RLock()
+	clients := h.rooms[roomID]
+	users := make([]RoomUser, 0, len(clients))
+	targets := make([]*Client, 0, len(clients))
+	for c := range clients {
+		users = append(users, RoomUser{
+			UserID:   c.userID,
+			Username: c.username,
+		})
+		targets = append(targets, c)
+	}
+	h.mu.RUnlock()
+
+	payload := PresencePayload{Users: users}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("ws: failed to marshal presence payload: %v", err)
+		return
+	}
+	env, err := json.Marshal(Envelope{Type: "presence", Payload: data})
+	if err != nil {
+		log.Printf("ws: failed to marshal presence envelope: %v", err)
+		return
+	}
+
+	for _, c := range targets {
+		h.conns.Send(c, env)
+	}
+}
+
 // DisconnectRoom closes all client connections in a room and removes them
 // from the hub. The onJoin callback is NOT fired for these removals since
 // the room is being expired.
@@ -285,6 +328,21 @@ func (h *Hub) DisconnectRoom(roomID string) {
 	for _, c := range targets {
 		h.conns.Remove(c)
 	}
+}
+
+// RoomUsers returns the list of online users in a room.
+func (h *Hub) RoomUsers(roomID string) []RoomUser {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	clients := h.rooms[roomID]
+	users := make([]RoomUser, 0, len(clients))
+	for c := range clients {
+		users = append(users, RoomUser{
+			UserID:   c.userID,
+			Username: c.username,
+		})
+	}
+	return users
 }
 
 // ClientCount returns the number of connected clients in a room.

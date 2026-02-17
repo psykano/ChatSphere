@@ -64,6 +64,7 @@ func New(addr string, opts ...Option) *Server {
 				r.TouchUserLeft()
 			}
 		}
+		s.hub.BroadcastPresence(roomID)
 	})
 	s.hub.SetOnBroadcast(func(roomID string) {
 		if r := rm.Get(roomID); r != nil {
@@ -85,6 +86,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/rooms", s.handleListRooms)
 	s.mux.HandleFunc("GET /api/rooms/code/{code}", s.handleGetRoomByCode)
 	s.mux.HandleFunc("GET /api/rooms/{id}", s.handleGetRoom)
+	s.mux.HandleFunc("GET /api/room-users/{id}", s.handleRoomUsers)
 	s.mux.HandleFunc("POST /api/rooms", s.handleCreateRoom)
 
 	sessions := ws.NewSessionStore(2 * time.Minute)
@@ -269,5 +271,18 @@ func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(room)
+}
+
+func (s *Server) handleRoomUsers(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rm := s.rooms.Get(id)
+	if rm == nil {
+		http.Error(w, `{"error":"room not found"}`, http.StatusNotFound)
+		return
+	}
+
+	users := s.hub.RoomUsers(id)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(users)
 }
 

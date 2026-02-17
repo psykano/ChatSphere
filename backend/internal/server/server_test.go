@@ -2,10 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/christopherjohns/chatsphere/internal/ws"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -645,5 +648,38 @@ func TestCreateRoomRateLimitXForwardedFor(t *testing.T) {
 	srv.mux.ServeHTTP(w, req)
 	if w.Code != http.StatusTooManyRequests {
 		t.Fatalf("4th request via X-Forwarded-For should be 429, got %d", w.Code)
+	}
+}
+
+func TestRoomUsersEndpointNotFound(t *testing.T) {
+	srv := New(":0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/room-users/nonexistent", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestRoomUsersEndpointEmpty(t *testing.T) {
+	srv := New(":0")
+	rm := srv.rooms.Create("Test Room", "", "creator", 10, true)
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/room-users/%s", rm.ID), nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var users []ws.RoomUser
+	if err := json.NewDecoder(w.Body).Decode(&users); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if len(users) != 0 {
+		t.Errorf("expected 0 users, got %d", len(users))
 	}
 }
