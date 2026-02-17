@@ -755,4 +755,81 @@ describe("ReconnectingWS", () => {
 
     ws.disconnect();
   });
+
+  it("sendTyping sends a typing envelope", () => {
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      username: "alice",
+    });
+    ws.connect();
+
+    const sock = lastSocket();
+    sock.simulateOpen();
+    sock.simulateMessage(sessionEnvelope());
+
+    ws.sendTyping();
+
+    // sent[0] is join, sent[1] is typing
+    expect(sock.sent).toHaveLength(2);
+    const typing = JSON.parse(sock.sent[1]);
+    expect(typing.type).toBe("typing");
+    expect(typing.payload).toEqual({});
+
+    ws.disconnect();
+  });
+
+  it("dispatches typing indicators via onMessage", () => {
+    const onMessage = vi.fn();
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      onMessage,
+    });
+    ws.connect();
+
+    const sock = lastSocket();
+    sock.simulateOpen();
+    sock.simulateMessage(sessionEnvelope());
+    sock.simulateMessage({ type: "history", payload: [] });
+
+    // Simulate receiving a typing indicator from the server.
+    sock.simulateMessage({
+      type: "typing",
+      payload: {
+        user_id: "user-789",
+        username: "bob",
+        room_id: "room1",
+        type: "typing",
+      },
+    });
+
+    expect(onMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "typing" }),
+    );
+
+    ws.disconnect();
+  });
+
+  it("sendTyping does nothing when disconnected", () => {
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+    });
+
+    // Should not throw when called before connect.
+    ws.sendTyping();
+
+    ws.connect();
+    const sock = lastSocket();
+    // Socket not yet open — sendTyping should be a no-op.
+    sock.readyState = MockWebSocket.CLOSED;
+    ws.sendTyping();
+
+    // Only the join message should be queued after open, no typing.
+    sock.simulateOpen();
+    expect(sock.sent).toHaveLength(1); // just the join
+
+    ws.disconnect();
+  });
 });

@@ -129,6 +129,12 @@ type MutePayload struct {
 	UserID string `json:"user_id"`
 }
 
+// TypingPayload is broadcast by the server to indicate a user is typing.
+type TypingPayload struct {
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+}
+
 // maxMessageLength is the maximum allowed length for a chat message.
 const maxMessageLength = 2000
 
@@ -220,6 +226,38 @@ func (h *Hub) Broadcast(roomID string, msg *message.Message) {
 
 	if h.onBroadcast != nil {
 		h.onBroadcast(roomID)
+	}
+}
+
+// BroadcastEphemeral sends a message to all clients in a room except the
+// sender. Unlike Broadcast, it does not persist the message or update session
+// tracking. This is intended for transient signals like typing indicators.
+func (h *Hub) BroadcastEphemeral(roomID string, sender *Client, msg *message.Message) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("ws: failed to marshal ephemeral message: %v", err)
+		return
+	}
+
+	env := Envelope{Type: string(msg.Type), Payload: data}
+	envData, err := json.Marshal(env)
+	if err != nil {
+		log.Printf("ws: failed to marshal ephemeral envelope: %v", err)
+		return
+	}
+
+	h.mu.RLock()
+	clients := h.rooms[roomID]
+	targets := make([]*Client, 0, len(clients))
+	for c := range clients {
+		if c != sender {
+			targets = append(targets, c)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, c := range targets {
+		h.conns.Send(c, envData)
 	}
 }
 

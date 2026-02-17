@@ -8,6 +8,7 @@ type Type string
 const (
 	TypeChat   Type = "chat"
 	TypeSystem Type = "system"
+	TypeTyping Type = "typing"
 )
 
 // Action describes what triggered a system message.

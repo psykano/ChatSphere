@@ -36,6 +36,11 @@ export interface HistoryBatchPayload {
   has_more: boolean;
 }
 
+export interface TypingPayload {
+  user_id: string;
+  username: string;
+}
+
 export interface ReconnectingWSOptions {
   url: string;
   roomID: string;
@@ -90,6 +95,10 @@ export class ReconnectingWS {
   send(type: string, payload: unknown): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ type, payload }));
+  }
+
+  sendTyping(): void {
+    this.send("typing", {});
   }
 
   fetchHistory(beforeID: string, limit?: number): void {

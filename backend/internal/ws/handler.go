@@ -451,6 +451,13 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 				continue
 			}
 			h.sendHistoryBatch(ctx, client, payload)
+		case "typing":
+			h.hub.BroadcastEphemeral(client.roomID, client, &message.Message{
+				RoomID:   client.roomID,
+				UserID:   client.userID,
+				Username: client.username,
+				Type:     message.TypeTyping,
+			})
 		case "leave":
 			return
 		}
