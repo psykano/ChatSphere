@@ -5,6 +5,7 @@ import { useChat } from "@/hooks/use-chat";
 import { ChatSidebar } from "@/components/chat-sidebar";
 import { MessageBubble } from "@/components/message-bubble";
 import { MessageInput } from "@/components/message-input";
+import { TypingIndicator } from "@/components/typing-indicator";
 import { UsernameInput } from "@/components/username-input";
 import { ThemeToggle } from "@/components/theme-toggle";
 
@@ -19,10 +20,12 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
   const {
     messages,
     onlineUsers,
+    typingUsers,
     connectionState,
     session,
     hasMore,
     sendMessage,
+    sendTyping,
     loadMore,
     disconnect,
   } = useChat({ roomID: room.id, username });
@@ -152,9 +155,13 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* Typing indicator */}
+        <TypingIndicator typingUsers={typingUsers} />
+
         {/* Input bar */}
         <MessageInput
           onSend={sendMessage}
+          onTyping={sendTyping}
           disabled={connectionState !== "connected"}
           readOnly={!username}
         />

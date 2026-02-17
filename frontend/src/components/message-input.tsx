@@ -1,16 +1,30 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { SendHorizontal } from "lucide-react";
 import { EmojiPicker } from "./emoji-picker";
 
+// Minimum interval between typing events (ms).
+const TYPING_THROTTLE = 2000;
+
 interface MessageInputProps {
   onSend: (content: string) => void;
+  onTyping?: () => void;
   disabled?: boolean;
   readOnly?: boolean;
 }
 
-export function MessageInput({ onSend, disabled, readOnly }: MessageInputProps) {
+export function MessageInput({ onSend, onTyping, disabled, readOnly }: MessageInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const lastTypingSentRef = useRef(0);
+
+  const emitTyping = useCallback(() => {
+    if (!onTyping) return;
+    const now = Date.now();
+    if (now - lastTypingSentRef.current >= TYPING_THROTTLE) {
+      lastTypingSentRef.current = now;
+      onTyping();
+    }
+  }, [onTyping]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -52,7 +66,10 @@ export function MessageInput({ onSend, disabled, readOnly }: MessageInputProps) 
       <textarea
         ref={textareaRef}
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => {
+          setValue(e.target.value);
+          if (e.target.value.trim()) emitTyping();
+        }}
         onKeyDown={handleKeyDown}
         placeholder={readOnly ? "Set a username to start chatting" : "Type a message..."}
         disabled={disabled || readOnly}
