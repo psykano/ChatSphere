@@ -10,9 +10,22 @@ function mockFetchRooms(rooms: unknown[]) {
   } as Response);
 }
 
+// Stub WebSocket for tests that navigate to ChatLayout
+class MockWebSocket {
+  static OPEN = 1;
+  readyState = MockWebSocket.OPEN;
+  onopen: (() => void) | null = null;
+  onclose: (() => void) | null = null;
+  onmessage: ((e: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  send = vi.fn();
+  close = vi.fn();
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.stubGlobal("WebSocket", MockWebSocket);
   });
 
   it("renders the heading", async () => {
@@ -117,7 +130,7 @@ describe("App", () => {
     expect(screen.getByText("XYZ789")).toBeInTheDocument();
   });
 
-  it("does not show room code dialog after creating a public room", async () => {
+  it("navigates to chat layout after creating a public room", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       if (init?.method === "POST") {
@@ -145,12 +158,11 @@ describe("App", () => {
     await user.type(screen.getByLabelText("Room name"), "Public Room");
     await user.click(screen.getByRole("button", { name: /create room/i }));
 
-    // Wait for any async operations to settle
-    await screen.findByText(/no public rooms yet/i);
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // Should navigate to chat layout showing the room name in header
+    expect(await screen.findByText("# Public Room")).toBeInTheDocument();
   });
 
-  it("closes room code dialog when Done is clicked", async () => {
+  it("navigates to chat layout after closing room code dialog", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       if (init?.method === "POST") {
@@ -183,6 +195,28 @@ describe("App", () => {
     await screen.findByRole("dialog", { name: /private room created/i });
     await user.click(screen.getByRole("button", { name: /done/i }));
 
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // After closing dialog, should navigate to chat layout
+    expect(await screen.findByText("# Secret Room")).toBeInTheDocument();
+  });
+
+  it("navigates to chat layout when clicking a room card", async () => {
+    const user = userEvent.setup();
+    mockFetchRooms([
+      {
+        id: "r1",
+        name: "General",
+        description: "Main chat",
+        capacity: 50,
+        active_users: 5,
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ]);
+    render(<App />);
+    await screen.findByText("General");
+    await user.click(screen.getByRole("button", { name: /general/i }));
+
+    // Should navigate to chat layout
+    expect(await screen.findByText("# General")).toBeInTheDocument();
+    expect(screen.getByLabelText("Message input")).toBeInTheDocument();
   });
 });

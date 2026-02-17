@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ChatLayout } from "@/components/chat-layout";
 import { CreateRoomForm } from "@/components/create-room-form";
 import { EnterCodeBar } from "@/components/enter-code-bar";
 import { RoomCard } from "@/components/room-card";
@@ -13,6 +14,19 @@ function App() {
   const { joinByCode, loading: joining, error: joinError } = useJoinByCode();
   const { createRoom, loading: creating, error: createError } = useCreateRoom();
   const [createdRoom, setCreatedRoom] = useState<Room | null>(null);
+  const [activeRoom, setActiveRoom] = useState<Room | null>(null);
+
+  if (activeRoom) {
+    return (
+      <ChatLayout
+        room={activeRoom}
+        onLeave={() => {
+          setActiveRoom(null);
+          refresh();
+        }}
+      />
+    );
+  }
 
   return (
     <div className="mx-auto flex min-h-screen max-w-2xl flex-col px-4 py-8">
@@ -31,6 +45,8 @@ function App() {
               refresh();
               if (!room.public && room.code) {
                 setCreatedRoom(room);
+              } else {
+                setActiveRoom(room);
               }
             }
           }}
@@ -40,7 +56,16 @@ function App() {
       </section>
 
       <section className="mb-6" aria-label="Join private room">
-        <EnterCodeBar onJoin={joinByCode} loading={joining} error={joinError} />
+        <EnterCodeBar
+          onJoin={async (code) => {
+            const room = await joinByCode(code);
+            if (room) {
+              setActiveRoom(room);
+            }
+          }}
+          loading={joining}
+          error={joinError}
+        />
       </section>
 
       <main className="flex-1">
@@ -61,7 +86,11 @@ function App() {
         {rooms.length > 0 && (
           <div className="space-y-3 overflow-y-auto">
             {rooms.map((room) => (
-              <RoomCard key={room.id} room={room} />
+              <RoomCard
+                key={room.id}
+                room={room}
+                onClick={setActiveRoom}
+              />
             ))}
           </div>
         )}
@@ -71,7 +100,11 @@ function App() {
         <RoomCodeDialog
           roomName={createdRoom.name}
           code={createdRoom.code}
-          onClose={() => setCreatedRoom(null)}
+          onClose={() => {
+            const room = createdRoom;
+            setCreatedRoom(null);
+            setActiveRoom(room);
+          }}
         />
       )}
     </div>
