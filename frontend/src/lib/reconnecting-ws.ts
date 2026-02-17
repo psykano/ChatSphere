@@ -31,6 +31,11 @@ export interface BackfillPayload {
   has_gap: boolean;
 }
 
+export interface HistoryBatchPayload {
+  messages: BackfillMessage[];
+  has_more: boolean;
+}
+
 export interface ReconnectingWSOptions {
   url: string;
   roomID: string;
@@ -39,6 +44,7 @@ export interface ReconnectingWSOptions {
   onStateChange?: (state: ConnectionState) => void;
   onSession?: (session: SessionPayload) => void;
   onBackfillGap?: () => void;
+  onHistoryBatch?: (messages: BackfillMessage[], hasMore: boolean) => void;
   maxRetries?: number;
   baseDelay?: number;
   maxDelay?: number;
@@ -84,6 +90,10 @@ export class ReconnectingWS {
   send(type: string, payload: unknown): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     this.ws.send(JSON.stringify({ type, payload }));
+  }
+
+  fetchHistory(beforeID: string, limit?: number): void {
+    this.send("history_fetch", { before_id: beforeID, limit: limit ?? 50 });
   }
 
   disconnect(): void {
@@ -143,6 +153,15 @@ export class ReconnectingWS {
           this.trackMessageID(msg.id);
           this.opts.onMessage?.({ type: msg.type, payload: msg });
         }
+        return;
+      }
+
+      if (envelope.type === "history_batch") {
+        const batch = envelope.payload as HistoryBatchPayload;
+        for (const msg of batch.messages) {
+          this.trackMessageID(msg.id);
+        }
+        this.opts.onHistoryBatch?.(batch.messages, batch.has_more);
         return;
       }
 

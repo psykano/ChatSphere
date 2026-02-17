@@ -272,6 +272,12 @@ const historyLimit = 50
 // backfillLimit caps how many missed messages to send on reconnect.
 const backfillLimit = 200
 
+// historyBatchDefault is the default number of older messages per batch.
+const historyBatchDefault = 50
+
+// historyBatchMax caps the number of older messages per batch.
+const historyBatchMax = 100
+
 // sendHistory sends recent message history to a newly joined client.
 // An empty history envelope is always sent so clients can rely on
 // receiving it as part of the join handshake.
@@ -300,6 +306,57 @@ func (h *Handler) sendHistory(ctx context.Context, client *Client) {
 	defer cancel()
 	if err := client.conn.Write(writeCtx, websocket.MessageText, env); err != nil {
 		log.Printf("ws: failed to write history: %v", err)
+	}
+}
+
+// sendHistoryBatch sends a batch of older messages to a client that requested them.
+func (h *Handler) sendHistoryBatch(ctx context.Context, client *Client, req HistoryFetchPayload) {
+	if h.messages == nil || req.BeforeID == "" {
+		return
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = historyBatchDefault
+	}
+	if limit > historyBatchMax {
+		limit = historyBatchMax
+	}
+
+	// Fetch one extra to detect if more messages exist.
+	msgs := h.messages.Before(client.roomID, req.BeforeID, limit+1)
+
+	hasMore := false
+	if len(msgs) > limit {
+		msgs = msgs[len(msgs)-limit:]
+		hasMore = true
+	}
+
+	if msgs == nil {
+		msgs = []*message.Message{}
+	}
+
+	payload := HistoryBatchPayload{
+		Messages: msgs,
+		HasMore:  hasMore,
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("ws: failed to marshal history batch: %v", err)
+		return
+	}
+
+	env, err := json.Marshal(Envelope{Type: "history_batch", Payload: data})
+	if err != nil {
+		log.Printf("ws: failed to marshal history batch envelope: %v", err)
+		return
+	}
+
+	writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	defer cancel()
+	if err := client.conn.Write(writeCtx, websocket.MessageText, env); err != nil {
+		log.Printf("ws: failed to write history batch: %v", err)
 	}
 }
 
@@ -351,6 +408,12 @@ func (h *Handler) readLoop(ctx context.Context, connCtx context.Context, client 
 				Type:      message.TypeChat,
 				CreatedAt: time.Now(),
 			})
+		case "history_fetch":
+			var payload HistoryFetchPayload
+			if err := json.Unmarshal(env.Payload, &payload); err != nil {
+				continue
+			}
+			h.sendHistoryBatch(ctx, client, payload)
 		case "leave":
 			return
 		}

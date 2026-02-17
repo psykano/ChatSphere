@@ -6,6 +6,7 @@ import "sync"
 type MessageStore interface {
 	Append(msg *Message)
 	After(roomID, afterID string) []*Message
+	Before(roomID, beforeID string, n int) []*Message
 	Recent(roomID string, n int) []*Message
 	DeleteRoom(roomID string)
 	Count(roomID string) int
@@ -54,6 +55,31 @@ func (s *Store) After(roomID, afterID string) []*Message {
 			// Return everything after this index.
 			result := make([]*Message, len(msgs)-i-1)
 			copy(result, msgs[i+1:])
+			return result
+		}
+	}
+	return nil
+}
+
+// Before returns up to n messages that were stored before the message
+// with the given ID. If beforeID is not found, nil is returned.
+func (s *Store) Before(roomID, beforeID string, n int) []*Message {
+	if beforeID == "" {
+		return nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	msgs := s.rooms[roomID]
+	for i, m := range msgs {
+		if m.ID == beforeID {
+			start := i - n
+			if start < 0 {
+				start = 0
+			}
+			result := make([]*Message, i-start)
+			copy(result, msgs[start:i])
 			return result
 		}
 	}

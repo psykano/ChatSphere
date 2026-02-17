@@ -89,6 +89,18 @@ type ChatPayload struct {
 	Content string `json:"content"`
 }
 
+// HistoryFetchPayload is sent by the client to request older messages.
+type HistoryFetchPayload struct {
+	BeforeID string `json:"before_id"`
+	Limit    int    `json:"limit"`
+}
+
+// HistoryBatchPayload is sent by the server with a batch of older messages.
+type HistoryBatchPayload struct {
+	Messages []*message.Message `json:"messages"`
+	HasMore  bool               `json:"has_more"`
+}
+
 // ErrorPayload is sent by the server when a client message is rejected.
 type ErrorPayload struct {
 	Message string `json:"message"`

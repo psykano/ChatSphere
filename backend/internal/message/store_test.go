@@ -182,6 +182,83 @@ func TestStoreRecentReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestStoreBeforeReturnsOlderMessages(t *testing.T) {
+	s := NewStore(100)
+	s.Append(msg("a", "room1", "first"))
+	s.Append(msg("b", "room1", "second"))
+	s.Append(msg("c", "room1", "third"))
+	s.Append(msg("d", "room1", "fourth"))
+
+	result := s.Before("room1", "d", 2)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	if result[0].ID != "b" || result[1].ID != "c" {
+		t.Errorf("expected IDs [b, c], got [%s, %s]", result[0].ID, result[1].ID)
+	}
+}
+
+func TestStoreBeforeFirstMessage(t *testing.T) {
+	s := NewStore(100)
+	s.Append(msg("a", "room1", "first"))
+	s.Append(msg("b", "room1", "second"))
+
+	result := s.Before("room1", "a", 5)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 messages before first, got %d", len(result))
+	}
+}
+
+func TestStoreBeforeEmptyID(t *testing.T) {
+	s := NewStore(100)
+	s.Append(msg("a", "room1", "first"))
+
+	result := s.Before("room1", "", 5)
+	if result != nil {
+		t.Fatalf("expected nil for empty beforeID, got %d messages", len(result))
+	}
+}
+
+func TestStoreBeforeUnknownID(t *testing.T) {
+	s := NewStore(100)
+	s.Append(msg("a", "room1", "first"))
+
+	result := s.Before("room1", "unknown", 5)
+	if result != nil {
+		t.Fatalf("expected nil for unknown ID, got %d messages", len(result))
+	}
+}
+
+func TestStoreBeforeFewerThanN(t *testing.T) {
+	s := NewStore(100)
+	s.Append(msg("a", "room1", "first"))
+	s.Append(msg("b", "room1", "second"))
+	s.Append(msg("c", "room1", "third"))
+
+	result := s.Before("room1", "c", 10)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	if result[0].ID != "a" || result[1].ID != "b" {
+		t.Errorf("expected IDs [a, b], got [%s, %s]", result[0].ID, result[1].ID)
+	}
+}
+
+func TestStoreBeforeReturnsCopy(t *testing.T) {
+	s := NewStore(100)
+	s.Append(msg("a", "room1", "first"))
+	s.Append(msg("b", "room1", "second"))
+	s.Append(msg("c", "room1", "third"))
+
+	result := s.Before("room1", "c", 2)
+	result[0] = msg("x", "room1", "modified")
+
+	check := s.Before("room1", "c", 2)
+	if check[0].ID != "a" {
+		t.Errorf("store was mutated: expected ID 'a', got %q", check[0].ID)
+	}
+}
+
 func TestStoreAfterReturnsCopy(t *testing.T) {
 	s := NewStore(100)
 	s.Append(msg("1", "room1", "first"))

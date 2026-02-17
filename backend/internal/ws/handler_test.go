@@ -1529,6 +1529,210 @@ func TestHandlerJoinUsernameAtMaxLength(t *testing.T) {
 	}
 }
 
+func TestHandlerHistoryFetch(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// Pre-populate the store with 80 messages.
+	for i := 0; i < 80; i++ {
+		messages.Append(&message.Message{
+			ID:        fmt.Sprintf("msg-%d", i),
+			RoomID:    "room1",
+			Content:   fmt.Sprintf("message %d", i),
+			Type:      message.TypeChat,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	// Join the room — receives last 50 messages (msg-30 to msg-79).
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1) // "alice joined"
+
+	// Request older messages before msg-30 (the oldest message in history).
+	fetchPayload, _ := json.Marshal(HistoryFetchPayload{BeforeID: "msg-30", Limit: 20})
+	fetchEnv, _ := json.Marshal(Envelope{Type: "history_fetch", Payload: fetchPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, fetchEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	// Read the history_batch response.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	if err := json.Unmarshal(data, &env); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if env.Type != "history_batch" {
+		t.Fatalf("expected type 'history_batch', got %q", env.Type)
+	}
+
+	var batch HistoryBatchPayload
+	if err := json.Unmarshal(env.Payload, &batch); err != nil {
+		t.Fatalf("unmarshal batch error: %v", err)
+	}
+
+	if len(batch.Messages) != 20 {
+		t.Fatalf("expected 20 messages, got %d", len(batch.Messages))
+	}
+	// Should be messages 10-29.
+	if batch.Messages[0].ID != "msg-10" {
+		t.Errorf("expected first message 'msg-10', got %q", batch.Messages[0].ID)
+	}
+	if batch.Messages[19].ID != "msg-29" {
+		t.Errorf("expected last message 'msg-29', got %q", batch.Messages[19].ID)
+	}
+	if !batch.HasMore {
+		t.Error("expected has_more=true since there are more messages before msg-10")
+	}
+}
+
+func TestHandlerHistoryFetchNoMore(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// Pre-populate with just 5 messages.
+	for i := 0; i < 5; i++ {
+		messages.Append(&message.Message{
+			ID:        fmt.Sprintf("msg-%d", i),
+			RoomID:    "room1",
+			Content:   fmt.Sprintf("message %d", i),
+			Type:      message.TypeChat,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1) // "alice joined"
+
+	// Request messages before msg-2 with limit 50.
+	fetchPayload, _ := json.Marshal(HistoryFetchPayload{BeforeID: "msg-2", Limit: 50})
+	fetchEnv, _ := json.Marshal(Envelope{Type: "history_fetch", Payload: fetchPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, fetchEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+	if env.Type != "history_batch" {
+		t.Fatalf("expected type 'history_batch', got %q", env.Type)
+	}
+
+	var batch HistoryBatchPayload
+	json.Unmarshal(env.Payload, &batch)
+
+	// Only 2 messages before msg-2 (msg-0, msg-1).
+	if len(batch.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(batch.Messages))
+	}
+	if batch.Messages[0].ID != "msg-0" {
+		t.Errorf("expected first message 'msg-0', got %q", batch.Messages[0].ID)
+	}
+	if batch.HasMore {
+		t.Error("expected has_more=false since these are the oldest messages")
+	}
+}
+
+func TestHandlerHistoryFetchLimitCapped(t *testing.T) {
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	handler := NewHandler(hub, nil, sessions, messages)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// Pre-populate with 150 messages.
+	for i := 0; i < 150; i++ {
+		messages.Append(&message.Message{
+			ID:        fmt.Sprintf("msg-%d", i),
+			RoomID:    "room1",
+			Content:   fmt.Sprintf("message %d", i),
+			Type:      message.TypeChat,
+			CreatedAt: time.Now(),
+		})
+	}
+
+	conn := dialAndJoin(t, ts.URL, "room1", "alice")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for hub.ClientCount("room1") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainSystemMessages(t, conn, 1)
+
+	// Request with limit exceeding max (100).
+	fetchPayload, _ := json.Marshal(HistoryFetchPayload{BeforeID: "msg-149", Limit: 500})
+	fetchEnv, _ := json.Marshal(Envelope{Type: "history_fetch", Payload: fetchPayload})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, fetchEnv); err != nil {
+		t.Fatalf("write error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+
+	var env Envelope
+	json.Unmarshal(data, &env)
+
+	var batch HistoryBatchPayload
+	json.Unmarshal(env.Payload, &batch)
+
+	// Should be capped at 100.
+	if len(batch.Messages) != 100 {
+		t.Fatalf("expected 100 messages (capped), got %d", len(batch.Messages))
+	}
+	if !batch.HasMore {
+		t.Error("expected has_more=true")
+	}
+}
+
 func TestHandlerJoinUsernameTrimmed(t *testing.T) {
 	ts, hub, _ := newHandlerTestServer(t, nil)
 	defer ts.Close()

@@ -559,6 +559,147 @@ describe("ReconnectingWS", () => {
     ws.disconnect();
   });
 
+  it("fetchHistory sends history_fetch envelope", () => {
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    ws.fetchHistory("msg-50", 30);
+    // sent[0] is join, sent[1] is history_fetch
+    expect(lastSocket().sent).toHaveLength(2);
+    const fetch = JSON.parse(lastSocket().sent[1]);
+    expect(fetch.type).toBe("history_fetch");
+    expect(fetch.payload.before_id).toBe("msg-50");
+    expect(fetch.payload.limit).toBe(30);
+
+    ws.disconnect();
+  });
+
+  it("fetchHistory uses default limit of 50", () => {
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    ws.fetchHistory("msg-50");
+    const fetch = JSON.parse(lastSocket().sent[1]);
+    expect(fetch.payload.limit).toBe(50);
+
+    ws.disconnect();
+  });
+
+  it("dispatches history_batch to onHistoryBatch callback", () => {
+    const onHistoryBatch = vi.fn();
+    const onMessage = vi.fn();
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      onHistoryBatch,
+      onMessage,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    lastSocket().simulateMessage({
+      type: "history_batch",
+      payload: {
+        messages: [
+          {
+            id: "msg-1",
+            room_id: "room1",
+            content: "old message",
+            type: "chat",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+          {
+            id: "msg-2",
+            room_id: "room1",
+            content: "older message",
+            type: "chat",
+            created_at: "2026-01-01T00:00:01Z",
+          },
+        ],
+        has_more: true,
+      },
+    });
+
+    expect(onHistoryBatch).toHaveBeenCalledTimes(1);
+    expect(onHistoryBatch).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ id: "msg-1", content: "old message" }),
+        expect.objectContaining({ id: "msg-2", content: "older message" }),
+      ],
+      true,
+    );
+    // history_batch should NOT trigger onMessage
+    expect(onMessage).not.toHaveBeenCalled();
+
+    ws.disconnect();
+  });
+
+  it("history_batch messages are tracked for deduplication", () => {
+    const onMessage = vi.fn();
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      onHistoryBatch: () => {},
+      onMessage,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    // Receive history_batch with msg-1
+    lastSocket().simulateMessage({
+      type: "history_batch",
+      payload: {
+        messages: [
+          {
+            id: "msg-1",
+            room_id: "room1",
+            content: "old",
+            type: "chat",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        has_more: false,
+      },
+    });
+
+    // Now receive msg-1 again as a backfill — should be deduplicated
+    lastSocket().simulateMessage({
+      type: "backfill",
+      payload: {
+        messages: [
+          {
+            id: "msg-1",
+            room_id: "room1",
+            content: "old",
+            type: "chat",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        has_gap: false,
+      },
+    });
+
+    expect(onMessage).not.toHaveBeenCalled();
+
+    ws.disconnect();
+  });
+
   it("history messages are tracked for deduplication", () => {
     const onMessage = vi.fn();
     const ws = new ReconnectingWS({

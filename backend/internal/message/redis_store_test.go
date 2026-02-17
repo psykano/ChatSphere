@@ -177,6 +177,68 @@ func TestRedisStorePreservesMessageFields(t *testing.T) {
 	}
 }
 
+func TestRedisStoreBeforeReturnsOlderMessages(t *testing.T) {
+	s, _ := newTestRedisStore(t, 100)
+	s.Append(redisMsg("a", "room1", "first"))
+	s.Append(redisMsg("b", "room1", "second"))
+	s.Append(redisMsg("c", "room1", "third"))
+	s.Append(redisMsg("d", "room1", "fourth"))
+
+	result := s.Before("room1", "d", 2)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	if result[0].ID != "b" || result[1].ID != "c" {
+		t.Errorf("expected IDs [b, c], got [%s, %s]", result[0].ID, result[1].ID)
+	}
+}
+
+func TestRedisStoreBeforeFirstMessage(t *testing.T) {
+	s, _ := newTestRedisStore(t, 100)
+	s.Append(redisMsg("a", "room1", "first"))
+	s.Append(redisMsg("b", "room1", "second"))
+
+	result := s.Before("room1", "a", 5)
+	if len(result) != 0 {
+		t.Fatalf("expected 0 messages before first, got %d", len(result))
+	}
+}
+
+func TestRedisStoreBeforeEmptyID(t *testing.T) {
+	s, _ := newTestRedisStore(t, 100)
+	s.Append(redisMsg("a", "room1", "first"))
+
+	result := s.Before("room1", "", 5)
+	if result != nil {
+		t.Fatalf("expected nil for empty beforeID, got %d messages", len(result))
+	}
+}
+
+func TestRedisStoreBeforeUnknownID(t *testing.T) {
+	s, _ := newTestRedisStore(t, 100)
+	s.Append(redisMsg("a", "room1", "first"))
+
+	result := s.Before("room1", "unknown", 5)
+	if result != nil {
+		t.Fatalf("expected nil for unknown ID, got %d messages", len(result))
+	}
+}
+
+func TestRedisStoreBeforeFewerThanN(t *testing.T) {
+	s, _ := newTestRedisStore(t, 100)
+	s.Append(redisMsg("a", "room1", "first"))
+	s.Append(redisMsg("b", "room1", "second"))
+	s.Append(redisMsg("c", "room1", "third"))
+
+	result := s.Before("room1", "c", 10)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	if result[0].ID != "a" || result[1].ID != "b" {
+		t.Errorf("expected IDs [a, b], got [%s, %s]", result[0].ID, result[1].ID)
+	}
+}
+
 func TestRedisStoreRecentReturnsLastN(t *testing.T) {
 	s, _ := newTestRedisStore(t, 100)
 	s.Append(redisMsg("a", "room1", "first"))

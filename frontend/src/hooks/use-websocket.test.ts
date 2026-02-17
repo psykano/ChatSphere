@@ -149,6 +149,66 @@ describe("useWebSocket", () => {
     expect(result.current.state).toBe("reconnecting");
   });
 
+  it("fetchHistory sends history_fetch envelope", () => {
+    const { result } = renderHook(() =>
+      useWebSocket({ url: "ws://localhost/ws", roomID: "room1" }),
+    );
+
+    act(() => {
+      lastSocket().simulateOpen();
+      lastSocket().simulateMessage(sessionEnvelope);
+    });
+
+    act(() => {
+      result.current.fetchHistory("msg-50", 25);
+    });
+
+    expect(lastSocket().sent).toHaveLength(2); // join + history_fetch
+    const fetch = JSON.parse(lastSocket().sent[1]);
+    expect(fetch.type).toBe("history_fetch");
+    expect(fetch.payload.before_id).toBe("msg-50");
+    expect(fetch.payload.limit).toBe(25);
+  });
+
+  it("calls onHistoryBatch for history_batch envelopes", () => {
+    const onHistoryBatch = vi.fn();
+    renderHook(() =>
+      useWebSocket({
+        url: "ws://localhost/ws",
+        roomID: "room1",
+        onHistoryBatch,
+      }),
+    );
+
+    act(() => {
+      lastSocket().simulateOpen();
+      lastSocket().simulateMessage(sessionEnvelope);
+    });
+
+    act(() => {
+      lastSocket().simulateMessage({
+        type: "history_batch",
+        payload: {
+          messages: [
+            {
+              id: "msg-1",
+              room_id: "room1",
+              content: "old",
+              type: "chat",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ],
+          has_more: true,
+        },
+      });
+    });
+
+    expect(onHistoryBatch).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "msg-1" })],
+      true,
+    );
+  });
+
   it("disconnects on unmount", () => {
     const { unmount } = renderHook(() =>
       useWebSocket({ url: "ws://localhost/ws", roomID: "room1" }),

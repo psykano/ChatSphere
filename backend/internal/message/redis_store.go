@@ -82,6 +82,45 @@ func (s *RedisStore) After(roomID, afterID string) []*Message {
 	return nil
 }
 
+// Before returns up to n messages that were stored before the message
+// with the given ID. If beforeID is not found, nil is returned.
+func (s *RedisStore) Before(roomID, beforeID string, n int) []*Message {
+	if beforeID == "" {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	vals, err := s.client.LRange(ctx, redisKey(roomID), 0, -1).Result()
+	if err != nil {
+		log.Printf("redis: failed to read messages: %v", err)
+		return nil
+	}
+
+	msgs := make([]*Message, 0, len(vals))
+	for _, v := range vals {
+		var m Message
+		if err := json.Unmarshal([]byte(v), &m); err != nil {
+			continue
+		}
+		msgs = append(msgs, &m)
+	}
+
+	for i, m := range msgs {
+		if m.ID == beforeID {
+			start := i - n
+			if start < 0 {
+				start = 0
+			}
+			result := make([]*Message, i-start)
+			copy(result, msgs[start:i])
+			return result
+		}
+	}
+	return nil
+}
+
 // Recent returns the last n messages for a room.
 func (s *RedisStore) Recent(roomID string, n int) []*Message {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
