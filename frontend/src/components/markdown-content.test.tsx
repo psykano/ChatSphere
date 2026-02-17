@@ -60,6 +60,30 @@ describe("MarkdownContent", () => {
     expect(quote.closest("blockquote")).toBeInTheDocument();
   });
 
+  it("renders plain URLs as clickable links", () => {
+    render(<MarkdownContent content="visit https://example.com today" />);
+    const link = screen.getByRole("link");
+    expect(link).toHaveAttribute("href", "https://example.com");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("renders plain http URLs as clickable links", () => {
+    render(<MarkdownContent content="go to http://example.com" />);
+    const link = screen.getByRole("link");
+    expect(link).toHaveAttribute("href", "http://example.com");
+  });
+
+  it("renders multiple plain URLs as separate links", () => {
+    render(
+      <MarkdownContent content="see https://one.com and https://two.com" />,
+    );
+    const links = screen.getAllByRole("link");
+    expect(links).toHaveLength(2);
+    expect(links[0]).toHaveAttribute("href", "https://one.com");
+    expect(links[1]).toHaveAttribute("href", "https://two.com");
+  });
+
   it("applies custom className", () => {
     const { container } = render(
       <MarkdownContent content="test" className="custom-class" />,

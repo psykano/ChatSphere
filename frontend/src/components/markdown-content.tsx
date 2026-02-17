@@ -1,4 +1,5 @@
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
 
 interface MarkdownContentProps {
@@ -10,6 +11,7 @@ export function MarkdownContent({ content, className }: MarkdownContentProps) {
   return (
     <div className={cn("markdown-content", className)}>
       <Markdown
+        remarkPlugins={[remarkGfm]}
         components={{
           p: ({ children }) => <p className="mb-1 last:mb-0">{children}</p>,
           strong: ({ children }) => (
