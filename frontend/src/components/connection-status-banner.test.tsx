@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, it, expect, vi } from "vitest";
 import { ConnectionStatusBanner } from "./connection-status-banner";
 
 describe("ConnectionStatusBanner", () => {
@@ -38,5 +39,29 @@ describe("ConnectionStatusBanner", () => {
     render(<ConnectionStatusBanner connectionState="disconnected" />);
     const banner = screen.getByRole("alert");
     expect(banner.className).toContain("red");
+  });
+
+  it("shows retry button when disconnected and onRetry is provided", () => {
+    const onRetry = vi.fn();
+    render(<ConnectionStatusBanner connectionState="disconnected" onRetry={onRetry} />);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
+  });
+
+  it("does not show retry button when disconnected and onRetry is not provided", () => {
+    render(<ConnectionStatusBanner connectionState="disconnected" />);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("calls onRetry when retry button is clicked", async () => {
+    const onRetry = vi.fn();
+    render(<ConnectionStatusBanner connectionState="disconnected" onRetry={onRetry} />);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not show retry button when reconnecting", () => {
+    const onRetry = vi.fn();
+    render(<ConnectionStatusBanner connectionState="reconnecting" onRetry={onRetry} />);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 });

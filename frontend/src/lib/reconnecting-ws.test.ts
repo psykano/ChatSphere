@@ -811,6 +811,164 @@ describe("ReconnectingWS", () => {
     ws.disconnect();
   });
 
+  it("retry() reconnects after max retries exhausted", () => {
+    const states: ConnectionState[] = [];
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      maxRetries: 1,
+      baseDelay: 50,
+      onStateChange: (s) => states.push(s),
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    // Exhaust retries.
+    lastSocket().simulateClose();
+    vi.advanceTimersByTime(200);
+    lastSocket().simulateClose();
+
+    expect(ws.getState()).toBe("disconnected");
+    const countBefore = MockWebSocket.instances.length;
+
+    // Manual retry should create a new connection.
+    ws.retry();
+    expect(MockWebSocket.instances.length).toBe(countBefore + 1);
+    expect(ws.getState()).toBe("connecting");
+
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope({ resumed: true }));
+    expect(ws.getState()).toBe("connected");
+
+    ws.disconnect();
+  });
+
+  it("retry() does nothing when already connected", () => {
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    const countBefore = MockWebSocket.instances.length;
+    ws.retry();
+    expect(MockWebSocket.instances.length).toBe(countBefore);
+
+    ws.disconnect();
+  });
+
+  it("retry() does nothing after disconnect()", () => {
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+    ws.disconnect();
+
+    const countBefore = MockWebSocket.instances.length;
+    ws.retry();
+    expect(MockWebSocket.instances.length).toBe(countBefore);
+  });
+
+  it("reconnects immediately when browser comes online during reconnecting", () => {
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      baseDelay: 5000,
+      maxDelay: 30_000,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    // Simulate disconnect — will schedule a retry with long delay.
+    lastSocket().simulateClose();
+    expect(ws.getState()).toBe("reconnecting");
+    const countBefore = MockWebSocket.instances.length;
+
+    // Simulate browser coming back online — should reconnect immediately.
+    window.dispatchEvent(new Event("online"));
+    expect(MockWebSocket.instances.length).toBe(countBefore + 1);
+
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope({ resumed: true }));
+    expect(ws.getState()).toBe("connected");
+
+    ws.disconnect();
+  });
+
+  it("online event reconnects when fully disconnected (max retries)", () => {
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      maxRetries: 1,
+      baseDelay: 50,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    // Exhaust retries.
+    lastSocket().simulateClose();
+    vi.advanceTimersByTime(200);
+    lastSocket().simulateClose();
+    expect(ws.getState()).toBe("disconnected");
+
+    const countBefore = MockWebSocket.instances.length;
+
+    // Browser comes online — should attempt reconnect even after max retries.
+    window.dispatchEvent(new Event("online"));
+    expect(MockWebSocket.instances.length).toBe(countBefore + 1);
+
+    ws.disconnect();
+  });
+
+  it("online event does nothing when already connected", () => {
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    const countBefore = MockWebSocket.instances.length;
+    window.dispatchEvent(new Event("online"));
+    expect(MockWebSocket.instances.length).toBe(countBefore);
+
+    ws.disconnect();
+  });
+
+  it("removes online listener on disconnect", () => {
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      maxRetries: 1,
+      baseDelay: 50,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+    ws.disconnect();
+
+    const countBefore = MockWebSocket.instances.length;
+    window.dispatchEvent(new Event("online"));
+    // No new connections should have been created.
+    expect(MockWebSocket.instances.length).toBe(countBefore);
+  });
+
   it("sendTyping does nothing when disconnected", () => {
     const ws = new ReconnectingWS({
       url: "ws://localhost/ws",

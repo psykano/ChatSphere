@@ -30,6 +30,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
     sendTyping,
     loadMore,
     disconnect,
+    retry,
   } = useChat({ roomID: room.id, username });
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -122,7 +123,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
         </header>
 
         {/* Connection status banner */}
-        <ConnectionStatusBanner connectionState={connectionState} />
+        <ConnectionStatusBanner connectionState={connectionState} onRetry={retry} />
 
         {/* Username input bar */}
         {!username && (

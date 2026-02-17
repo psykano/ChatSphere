@@ -3,10 +3,12 @@ import type { ConnectionState } from "@/lib/reconnecting-ws";
 
 interface ConnectionStatusBannerProps {
   connectionState: ConnectionState;
+  onRetry?: () => void;
 }
 
 export function ConnectionStatusBanner({
   connectionState,
+  onRetry,
 }: ConnectionStatusBannerProps) {
   if (connectionState === "connected") return null;
 
@@ -35,6 +37,14 @@ export function ConnectionStatusBanner({
     >
       <WifiOff className="h-4 w-4" aria-hidden="true" />
       <span>Disconnected from server</span>
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          className="ml-2 rounded bg-red-500/20 px-2 py-0.5 text-sm text-red-300 hover:bg-red-500/30 transition-colors"
+        >
+          Retry
+        </button>
+      )}
     </div>
   );
 }

@@ -22,6 +22,7 @@ export interface UseWebSocketReturn {
   send: (type: string, payload: unknown) => void;
   fetchHistory: (beforeID: string, limit?: number) => void;
   disconnect: () => void;
+  retry: () => void;
 }
 
 export function useWebSocket(
@@ -70,5 +71,9 @@ export function useWebSocket(
     wsRef.current = null;
   }, []);
 
-  return { state, session, send, fetchHistory, disconnect };
+  const retry = useCallback(() => {
+    wsRef.current?.retry();
+  }, []);
+
+  return { state, session, send, fetchHistory, disconnect, retry };
 }

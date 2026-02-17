@@ -131,7 +131,7 @@ export function useChat({ roomID, username }: UseChatOptions) {
 
   const wsURL = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
 
-  const { state, session, send, fetchHistory, disconnect } = useWebSocket({
+  const { state, session, send, fetchHistory, disconnect, retry } = useWebSocket({
     url: wsURL,
     roomID,
     username,
@@ -168,5 +168,6 @@ export function useChat({ roomID, username }: UseChatOptions) {
     sendTyping,
     loadMore,
     disconnect,
+    retry,
   };
 }

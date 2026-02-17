@@ -71,6 +71,7 @@ export class ReconnectingWS {
   private disposed = false;
   private seenIDs = new Set<string>();
   private seenIDOrder: string[] = [];
+  private boundOnOnline: (() => void) | null = null;
 
   private readonly opts: Required<
     Pick<ReconnectingWSOptions, "maxRetries" | "baseDelay" | "maxDelay">
@@ -89,6 +90,7 @@ export class ReconnectingWS {
   connect(): void {
     if (this.disposed) return;
     this.setState(this.retryCount > 0 ? "reconnecting" : "connecting");
+    this.listenNetworkEvents();
     this.openSocket();
   }
 
@@ -105,9 +107,18 @@ export class ReconnectingWS {
     this.send("history_fetch", { before_id: beforeID, limit: limit ?? 50 });
   }
 
+  /** Reset retry count and attempt to reconnect. Useful after max retries exhausted. */
+  retry(): void {
+    if (this.disposed) return;
+    if (this.state === "connecting" || this.state === "connected" || this.state === "reconnecting") return;
+    this.retryCount = 0;
+    this.connect();
+  }
+
   disconnect(): void {
     this.disposed = true;
     this.clearRetryTimer();
+    this.removeNetworkEvents();
     if (this.ws) {
       this.ws.close(1000, "client disconnect");
       this.ws = null;
@@ -262,6 +273,28 @@ export class ReconnectingWS {
     while (this.seenIDOrder.length > SEEN_IDS_LIMIT) {
       const oldest = this.seenIDOrder.shift()!;
       this.seenIDs.delete(oldest);
+    }
+  }
+
+  private listenNetworkEvents(): void {
+    if (this.boundOnOnline) return;
+    this.boundOnOnline = () => {
+      // When the browser comes back online, skip waiting for the backoff timer
+      // and attempt to reconnect immediately.
+      if (this.disposed) return;
+      if (this.state !== "reconnecting" && this.state !== "disconnected") return;
+      this.clearRetryTimer();
+      this.retryCount = 0;
+      this.setState("reconnecting");
+      this.openSocket();
+    };
+    window.addEventListener("online", this.boundOnOnline);
+  }
+
+  private removeNetworkEvents(): void {
+    if (this.boundOnOnline) {
+      window.removeEventListener("online", this.boundOnOnline);
+      this.boundOnOnline = null;
     }
   }
 
