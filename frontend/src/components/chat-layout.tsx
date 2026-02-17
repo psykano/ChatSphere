@@ -5,6 +5,7 @@ import { useChat } from "@/hooks/use-chat";
 import { ChatSidebar } from "@/components/chat-sidebar";
 import { MessageBubble } from "@/components/message-bubble";
 import { MessageInput } from "@/components/message-input";
+import { UsernameInput } from "@/components/username-input";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface ChatLayoutProps {
@@ -13,6 +14,8 @@ interface ChatLayoutProps {
 }
 
 export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
+  const [username, setUsername] = useState<string | undefined>();
+
   const {
     messages,
     onlineUsers,
@@ -22,7 +25,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
     sendMessage,
     loadMore,
     disconnect,
-  } = useChat({ roomID: room.id });
+  } = useChat({ roomID: room.id, username });
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -112,6 +115,11 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
             <ThemeToggle />
           </div>
         </header>
+
+        {/* Username input bar */}
+        {!username && (
+          <UsernameInput onSubmit={setUsername} />
+        )}
 
         {/* Messages area */}
         <div

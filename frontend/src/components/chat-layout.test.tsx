@@ -81,6 +81,22 @@ describe("ChatLayout", () => {
     expect(screen.getByRole("button", { name: /leave room/i })).toBeInTheDocument();
   });
 
+  it("renders username input bar when no username is set", () => {
+    renderChatLayout();
+    expect(screen.getByLabelText("Username")).toBeInTheDocument();
+    expect(screen.getByRole("form", { name: "Set username" })).toBeInTheDocument();
+  });
+
+  it("hides username input bar after submitting a username", async () => {
+    const user = userEvent.setup();
+    renderChatLayout();
+
+    await user.type(screen.getByLabelText("Username"), "Alice");
+    await user.click(screen.getByRole("button", { name: "Join" }));
+
+    expect(screen.queryByLabelText("Username")).not.toBeInTheDocument();
+  });
+
   it("renders message input", () => {
     renderChatLayout();
     expect(screen.getByLabelText("Message input")).toBeInTheDocument();
