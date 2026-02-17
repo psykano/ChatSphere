@@ -30,12 +30,12 @@ function App() {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-2xl flex-col px-4 py-8">
-      <header className="relative mb-8 text-center">
+    <div className="mx-auto flex min-h-screen max-w-2xl flex-col px-4 py-6 sm:py-8">
+      <header className="relative mb-6 text-center sm:mb-8">
         <div className="absolute right-0 top-0">
           <ThemeToggle />
         </div>
-        <h1 className="text-4xl font-bold tracking-tight">ChatSphere</h1>
+        <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">ChatSphere</h1>
         <p className="mt-2 text-muted-foreground">
           Real-time anonymous chat rooms
         </p>

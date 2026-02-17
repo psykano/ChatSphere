@@ -29,7 +29,7 @@ export function MessageBubble({ message, isOwn }: MessageBubbleProps) {
 
   return (
     <div
-      className={cn("flex flex-col gap-0.5 max-w-[75%]", isOwn ? "ml-auto items-end" : "items-start")}
+      className={cn("flex flex-col gap-0.5 max-w-[85%] sm:max-w-[75%]", isOwn ? "ml-auto items-end" : "items-start")}
     >
       {!isOwn && message.username && (
         <span className="text-xs font-medium text-muted-foreground px-1">

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Menu, X } from "lucide-react";
 import type { Room } from "@/components/room-card";
 import { useChat } from "@/hooks/use-chat";
 import { ChatSidebar } from "@/components/chat-sidebar";
@@ -23,6 +24,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
     disconnect,
   } = useChat({ roomID: room.id });
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prevMessageCountRef = useRef(0);
@@ -66,16 +68,40 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
 
   return (
     <div className="flex h-screen" role="main">
-      <ChatSidebar
-        room={room}
-        onlineUsers={onlineUsers}
-        connectionState={connectionState}
-        onLeave={handleLeave}
-      />
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
 
-      <div className="flex flex-1 flex-col">
+      {/* Sidebar: always visible on md+, overlay drawer on mobile */}
+      <div
+        className={`fixed inset-y-0 left-0 z-40 w-60 transform transition-transform duration-200 md:static md:translate-x-0 ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <ChatSidebar
+          room={room}
+          onlineUsers={onlineUsers}
+          connectionState={connectionState}
+          onLeave={handleLeave}
+        />
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col">
         {/* Room header */}
-        <header className="flex items-center border-b border-border bg-card px-6 py-3">
+        <header className="flex items-center border-b border-border bg-card px-4 py-3 md:px-6">
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="mr-2 inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:text-foreground md:hidden"
+            aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+          >
+            {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
           <h1 className="truncate text-lg font-semibold text-card-foreground">
             # {room.name}
           </h1>
@@ -91,7 +117,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
         <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-y-auto px-6 py-4"
+          className="flex-1 overflow-y-auto px-4 py-4 md:px-6"
           role="log"
           aria-label="Chat messages"
         >

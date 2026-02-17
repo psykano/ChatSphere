@@ -27,7 +27,7 @@ export function MessageInput({ onSend, disabled }: MessageInputProps) {
   return (
     <form
       onSubmit={handleSubmit}
-      className="flex items-end gap-2 border-t border-border bg-card p-4"
+      className="flex items-end gap-2 border-t border-border bg-card p-3 sm:p-4"
     >
       <textarea
         value={value}

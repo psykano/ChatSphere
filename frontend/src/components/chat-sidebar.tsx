@@ -17,7 +17,7 @@ export function ChatSidebar({
   onLeave,
 }: ChatSidebarProps) {
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-card">
+    <aside className="flex h-full w-full shrink-0 flex-col border-r border-border bg-card">
       <div className="border-b border-border p-4">
         <h2 className="truncate font-semibold text-card-foreground">
           {room.name}
