@@ -12,18 +12,23 @@ import (
 	"github.com/christopherjohns/chatsphere/internal/message"
 	"github.com/christopherjohns/chatsphere/internal/ratelimit"
 	"github.com/christopherjohns/chatsphere/internal/room"
+	"github.com/christopherjohns/chatsphere/internal/user"
 	"github.com/christopherjohns/chatsphere/internal/ws"
 	"github.com/redis/go-redis/v9"
 )
 
+// sessionCookieName is the name of the cookie that holds the anonymous session token.
+const sessionCookieName = "chatsphere_session"
+
 // Server is the main HTTP server for ChatSphere.
 type Server struct {
-	addr        string
-	mux         *http.ServeMux
-	rooms       *room.Manager
-	hub         *ws.Hub
-	createLimit *ratelimit.IPLimiter
-	redisClient redis.Cmdable
+	addr         string
+	mux          *http.ServeMux
+	rooms        *room.Manager
+	hub          *ws.Hub
+	createLimit  *ratelimit.IPLimiter
+	redisClient  redis.Cmdable
+	userSessions *user.SessionStore
 }
 
 // Option configures the server.
@@ -41,10 +46,11 @@ func WithRedis(client redis.Cmdable) Option {
 func New(addr string, opts ...Option) *Server {
 	rm := room.NewManager()
 	s := &Server{
-		addr:        addr,
-		mux:         http.NewServeMux(),
-		rooms:       rm,
-		createLimit: ratelimit.NewIPLimiter(3, time.Hour),
+		addr:         addr,
+		mux:          http.NewServeMux(),
+		rooms:        rm,
+		createLimit:  ratelimit.NewIPLimiter(3, time.Hour),
+		userSessions: user.NewSessionStore(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -75,6 +81,7 @@ func (s *Server) Run() error {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.mux.HandleFunc("GET /api/session", s.handleSession)
 	s.mux.HandleFunc("GET /api/rooms", s.handleListRooms)
 	s.mux.HandleFunc("GET /api/rooms/code/{code}", s.handleGetRoomByCode)
 	s.mux.HandleFunc("GET /api/rooms/{id}", s.handleGetRoom)
@@ -99,6 +106,7 @@ func (s *Server) routes() {
 		}
 		return ""
 	}, sessions, messages)
+	wsHandler.SetUserSessions(s.userSessions, sessionCookieName)
 	s.mux.Handle("GET /ws", wsHandler)
 
 	s.rooms.StartExpiration(room.ExpirationConfig{
@@ -139,6 +147,31 @@ func (s *Server) routes() {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleSession returns the current anonymous session or creates a new one.
+// The session token is stored in an HTTP-only cookie so the user keeps the
+// same identity across page reloads and room changes.
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		if sess := s.userSessions.Get(cookie.Value); sess != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(sess)
+			return
+		}
+	}
+
+	sess := s.userSessions.Create()
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    sess.Token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   86400, // 24 hours
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(sess)
 }
 
 func (s *Server) handleListRooms(w http.ResponseWriter, r *http.Request) {

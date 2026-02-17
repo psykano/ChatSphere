@@ -12,6 +12,7 @@ import (
 
 	"github.com/christopherjohns/chatsphere/internal/message"
 	"github.com/christopherjohns/chatsphere/internal/ratelimit"
+	"github.com/christopherjohns/chatsphere/internal/user"
 	"nhooyr.io/websocket"
 )
 
@@ -26,6 +27,8 @@ type Handler struct {
 	sessions     *SessionStore
 	messages     message.MessageStore
 	chatLimiter  *ratelimit.IPLimiter
+	userSessions *user.SessionStore
+	cookieName   string
 }
 
 // NewHandler creates a new WebSocket Handler.
@@ -37,6 +40,13 @@ func NewHandler(hub *Hub, validateRoom RoomValidator, sessions *SessionStore, me
 		messages:     messages,
 		chatLimiter:  ratelimit.NewIPLimiter(10, 10*time.Second),
 	}
+}
+
+// SetUserSessions configures the anonymous user session store and cookie name
+// so that WebSocket connections can reuse a persistent user identity.
+func (h *Handler) SetUserSessions(store *user.SessionStore, cookieName string) {
+	h.userSessions = store
+	h.cookieName = cookieName
 }
 
 // SetChatLimiter replaces the default chat rate limiter (for testing).
@@ -56,9 +66,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
+	userID := generateClientID()
+	if h.userSessions != nil && h.cookieName != "" {
+		if cookie, err := r.Cookie(h.cookieName); err == nil {
+			if sess := h.userSessions.Get(cookie.Value); sess != nil {
+				userID = sess.UserID
+			}
+		}
+	}
+
 	client := &Client{
 		conn:   conn,
-		userID: generateClientID(),
+		userID: userID,
 		hub:    h.hub,
 	}
 

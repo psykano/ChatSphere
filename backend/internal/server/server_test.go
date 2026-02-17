@@ -530,6 +530,99 @@ func TestCreateRoomRateLimitPerIP(t *testing.T) {
 	}
 }
 
+func TestSessionEndpointCreatesSession(t *testing.T) {
+	srv := New(":0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if body["token"] == nil || body["token"] == "" {
+		t.Error("expected non-empty token")
+	}
+	if body["user_id"] == nil || body["user_id"] == "" {
+		t.Error("expected non-empty user_id")
+	}
+
+	// Verify cookie is set.
+	cookies := w.Result().Cookies()
+	found := false
+	for _, c := range cookies {
+		if c.Name == sessionCookieName {
+			found = true
+			if c.Value != body["token"] {
+				t.Errorf("cookie value %q != response token %q", c.Value, body["token"])
+			}
+			if !c.HttpOnly {
+				t.Error("expected HttpOnly cookie")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected session cookie to be set")
+	}
+}
+
+func TestSessionEndpointReturnsSameSession(t *testing.T) {
+	srv := New(":0")
+
+	// First request creates a session.
+	req1 := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	w1 := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w1, req1)
+
+	var first map[string]interface{}
+	json.NewDecoder(w1.Body).Decode(&first)
+	token := first["token"].(string)
+	userID := first["user_id"].(string)
+
+	// Second request with cookie returns same session.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	req2.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	w2 := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w2, req2)
+
+	var second map[string]interface{}
+	json.NewDecoder(w2.Body).Decode(&second)
+
+	if second["token"] != token {
+		t.Errorf("expected same token %q, got %q", token, second["token"])
+	}
+	if second["user_id"] != userID {
+		t.Errorf("expected same user_id %q, got %q", userID, second["user_id"])
+	}
+}
+
+func TestSessionEndpointInvalidCookieCreatesNew(t *testing.T) {
+	srv := New(":0")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/session", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "bogus"})
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&body)
+	if body["token"] == nil || body["token"] == "" {
+		t.Error("expected a new session to be created")
+	}
+	if body["token"] == "bogus" {
+		t.Error("expected a different token than the bogus one")
+	}
+}
+
 func TestCreateRoomRateLimitXForwardedFor(t *testing.T) {
 	srv := New(":0")
 	body := `{"name":"Room","capacity":10,"public":true}`

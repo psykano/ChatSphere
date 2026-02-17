@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/christopherjohns/chatsphere/internal/message"
 	"github.com/christopherjohns/chatsphere/internal/ratelimit"
+	"github.com/christopherjohns/chatsphere/internal/user"
 	"nhooyr.io/websocket"
 )
 
@@ -2463,5 +2465,136 @@ func TestTypingIndicatorRoomIsolation(t *testing.T) {
 	_, _, err := conn3.Read(readCtx)
 	if err == nil {
 		t.Fatal("typing indicator should not leak across rooms")
+	}
+}
+
+func newHandlerTestServerWithUserSessions(t *testing.T) (*httptest.Server, *Hub, *user.SessionStore) {
+	t.Helper()
+	hub := NewHub(nil)
+	sessions := NewSessionStore(30 * time.Second)
+	messages := message.NewStore(200)
+	hub.SetMessageStore(messages)
+	hub.SetSessionStore(sessions)
+	userSessions := user.NewSessionStore()
+	handler := NewHandler(hub, nil, sessions, messages)
+	handler.SetUserSessions(userSessions, "chatsphere_session")
+	return httptest.NewServer(handler), hub, userSessions
+}
+
+func dialWSWithCookie(t *testing.T, url, cookieName, cookieValue string) *websocket.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(url, "http")
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Cookie": {fmt.Sprintf("%s=%s", cookieName, cookieValue)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("dial error: %v", err)
+	}
+	return conn
+}
+
+func dialJoinAndReadSessionWithCookie(t *testing.T, url, roomID, username, cookieName, cookieValue string) (*websocket.Conn, SessionPayload) {
+	t.Helper()
+	conn := dialWSWithCookie(t, url, cookieName, cookieValue)
+
+	payload, _ := json.Marshal(JoinPayload{RoomID: roomID, Username: username})
+	env, _ := json.Marshal(Envelope{Type: "join", Payload: payload})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, env); err != nil {
+		t.Fatalf("write join error: %v", err)
+	}
+
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	_, data, err := conn.Read(readCtx)
+	if err != nil {
+		t.Fatalf("read session response error: %v", err)
+	}
+
+	var sessEnv Envelope
+	if err := json.Unmarshal(data, &sessEnv); err != nil {
+		t.Fatalf("unmarshal session envelope error: %v", err)
+	}
+
+	var sp SessionPayload
+	json.Unmarshal(sessEnv.Payload, &sp)
+	return conn, sp
+}
+
+func TestHandlerUserSessionCookieSetsUserID(t *testing.T) {
+	ts, _, userSessions := newHandlerTestServerWithUserSessions(t)
+	defer ts.Close()
+
+	// Create an anonymous user session.
+	anonSess := userSessions.Create()
+
+	// Connect with the cookie — user ID should match the anonymous session.
+	conn, sp := dialJoinAndReadSessionWithCookie(t, ts.URL, "room1", "alice", "chatsphere_session", anonSess.Token)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	if sp.UserID != anonSess.UserID {
+		t.Errorf("expected user ID %q from cookie session, got %q", anonSess.UserID, sp.UserID)
+	}
+}
+
+func TestHandlerUserSessionCookiePersistsAcrossRooms(t *testing.T) {
+	ts, _, userSessions := newHandlerTestServerWithUserSessions(t)
+	defer ts.Close()
+
+	anonSess := userSessions.Create()
+
+	// Join room1.
+	conn1, sp1 := dialJoinAndReadSessionWithCookie(t, ts.URL, "room1", "alice", "chatsphere_session", anonSess.Token)
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+
+	// Join room2 with the same cookie.
+	conn2, sp2 := dialJoinAndReadSessionWithCookie(t, ts.URL, "room2", "alice", "chatsphere_session", anonSess.Token)
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	// Both should have the same user ID.
+	if sp1.UserID != sp2.UserID {
+		t.Errorf("expected same user ID across rooms, got %q and %q", sp1.UserID, sp2.UserID)
+	}
+}
+
+func TestHandlerWithoutCookieGetsRandomID(t *testing.T) {
+	ts, _, _ := newHandlerTestServerWithUserSessions(t)
+	defer ts.Close()
+
+	// Connect without cookie.
+	conn1, sp1 := dialJoinAndReadSession(t, ts.URL, "room1", "alice", "")
+	defer conn1.Close(websocket.StatusNormalClosure, "")
+
+	// Drain history.
+	readCtx, readCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel()
+	conn1.Read(readCtx)
+
+	conn2, sp2 := dialJoinAndReadSession(t, ts.URL, "room1", "bob", "")
+	defer conn2.Close(websocket.StatusNormalClosure, "")
+
+	// Without cookies, each connection gets a different random user ID.
+	if sp1.UserID == sp2.UserID {
+		t.Error("expected different user IDs without cookie, got same")
+	}
+}
+
+func TestHandlerInvalidCookieGetsRandomID(t *testing.T) {
+	ts, _, _ := newHandlerTestServerWithUserSessions(t)
+	defer ts.Close()
+
+	// Connect with a bogus cookie.
+	conn, sp := dialJoinAndReadSessionWithCookie(t, ts.URL, "room1", "alice", "chatsphere_session", "bogus-token")
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Should still get a user ID (just not from a stored session).
+	if sp.UserID == "" {
+		t.Error("expected non-empty user ID even with invalid cookie")
 	}
 }
