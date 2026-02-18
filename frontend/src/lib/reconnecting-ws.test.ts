@@ -756,6 +756,59 @@ describe("ReconnectingWS", () => {
     ws.disconnect();
   });
 
+  it("history messages are deduplicated when history is sent again on reconnect", () => {
+    const onMessage = vi.fn();
+    const ws = new ReconnectingWS({
+      url: "ws://localhost/ws",
+      roomID: "room1",
+      onMessage,
+    });
+
+    ws.connect();
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope());
+
+    // Receive history with msg-1 on initial join.
+    lastSocket().simulateMessage({
+      type: "history",
+      payload: [
+        {
+          id: "msg-1",
+          room_id: "room1",
+          content: "hello",
+          type: "chat",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+    expect(onMessage).toHaveBeenCalledTimes(1);
+
+    // Simulate disconnect and reconnect where session resumption fails —
+    // server sends history again (not resumed) instead of backfill.
+    lastSocket().simulateClose();
+    vi.advanceTimersByTime(1000);
+    lastSocket().simulateOpen();
+    lastSocket().simulateMessage(sessionEnvelope({ resumed: false }));
+
+    lastSocket().simulateMessage({
+      type: "history",
+      payload: [
+        {
+          id: "msg-1",
+          room_id: "room1",
+          content: "hello",
+          type: "chat",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    });
+
+    // msg-1 should be deduplicated — no additional call.
+    expect(onMessage).toHaveBeenCalledTimes(1);
+
+    ws.disconnect();
+  });
+
   it("sendTyping sends a typing envelope", () => {
     const ws = new ReconnectingWS({
       url: "ws://localhost/ws",

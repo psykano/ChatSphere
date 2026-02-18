@@ -171,6 +171,7 @@ export class ReconnectingWS {
       if (envelope.type === "history") {
         const messages = envelope.payload as BackfillMessage[];
         for (const msg of messages) {
+          if (this.seenIDs.has(msg.id)) continue;
           this.trackMessageID(msg.id);
           this.opts.onMessage?.({ type: msg.type, payload: msg });
         }
