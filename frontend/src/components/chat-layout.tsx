@@ -74,11 +74,18 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
     }
   }, [messages.length]);
 
-  // Scroll to bottom on initial load
+  // Scroll to bottom on initial load and after reconnects (e.g. username set)
   const isConnected = connectionState === "connected";
+  const hasScrolledOnLoad = useRef(false);
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView?.();
-  }, [isConnected]);
+    if (!isConnected) {
+      hasScrolledOnLoad.current = false;
+    }
+    if (isConnected && messages.length > 0 && !hasScrolledOnLoad.current) {
+      hasScrolledOnLoad.current = true;
+      messagesEndRef.current?.scrollIntoView?.();
+    }
+  }, [isConnected, messages.length]);
 
   function handleLeave() {
     disconnect();

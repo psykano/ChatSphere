@@ -65,6 +65,14 @@ export function useChat({ roomID, username }: UseChatOptions) {
     };
   }, []);
 
+  // Reset state when room or username changes (triggers WebSocket reconnect).
+  useEffect(() => {
+    setMessages([]);
+    setOnlineUsers([]);
+    setHasMore(false);
+    setTypingUsers(new Map());
+  }, [roomID, username]);
+
   const handleMessage = useCallback((envelope: Envelope) => {
     if (envelope.type === "message" || envelope.type === "chat") {
       const msg = envelope.payload as ChatMessage;
