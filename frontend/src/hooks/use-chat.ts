@@ -163,6 +163,27 @@ export function useChat({ roomID, username }: UseChatOptions) {
     send("typing", {});
   }, [send]);
 
+  const sendKick = useCallback(
+    (userID: string) => {
+      send("kick", { user_id: userID });
+    },
+    [send],
+  );
+
+  const sendBan = useCallback(
+    (userID: string) => {
+      send("ban", { user_id: userID });
+    },
+    [send],
+  );
+
+  const sendMute = useCallback(
+    (userID: string) => {
+      send("mute", { user_id: userID });
+    },
+    [send],
+  );
+
   const loadMore = useCallback(() => {
     if (loadingHistoryRef.current || !hasMore || messages.length === 0) return;
     loadingHistoryRef.current = true;
@@ -178,6 +199,9 @@ export function useChat({ roomID, username }: UseChatOptions) {
     hasMore,
     sendMessage,
     sendTyping,
+    sendKick,
+    sendBan,
+    sendMute,
     loadMore,
     disconnect,
     retry,

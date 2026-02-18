@@ -99,6 +99,7 @@ type SessionPayload struct {
 	UserID    string `json:"user_id"`
 	Username  string `json:"username"`
 	Resumed   bool   `json:"resumed"`
+	IsCreator bool   `json:"is_creator"`
 }
 
 // ChatPayload is sent by the client to post a message.

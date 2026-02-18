@@ -14,6 +14,7 @@ export interface SessionPayload {
   user_id: string;
   username: string;
   resumed: boolean;
+  is_creator: boolean;
 }
 
 export interface BackfillMessage {

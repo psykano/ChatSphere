@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { AtSign, Copy, MessageSquare } from "lucide-react";
+import { AtSign, Copy, MessageSquare, UserX, ShieldBan, VolumeOff } from "lucide-react";
 
 function clampToViewport(el: HTMLElement, x: number, y: number): { x: number; y: number } {
   const rect = el.getBoundingClientRect();
@@ -26,9 +26,12 @@ interface UserContextMenuProps {
   username: string;
   children: React.ReactNode;
   onMention?: (username: string) => void;
+  onKick?: (username: string) => void;
+  onBan?: (username: string) => void;
+  onMute?: (username: string) => void;
 }
 
-export function UserContextMenu({ username, children, onMention }: UserContextMenuProps) {
+export function UserContextMenu({ username, children, onMention, onKick, onBan, onMute }: UserContextMenuProps) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<Position>({ x: 0, y: 0 });
   const [copied, setCopied] = useState(false);
@@ -166,6 +169,55 @@ export function UserContextMenu({ username, children, onMention }: UserContextMe
             <MessageSquare className="h-3.5 w-3.5" />
             Copy @mention
           </button>
+
+          {(onKick || onMute || onBan) && (
+            <div className="h-px bg-border my-1" role="separator" />
+          )}
+
+          {onMute && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onMute(username);
+                close();
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-popover-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+            >
+              <VolumeOff className="h-3.5 w-3.5" />
+              Mute
+            </button>
+          )}
+
+          {onKick && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onKick(username);
+                close();
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+            >
+              <UserX className="h-3.5 w-3.5" />
+              Kick
+            </button>
+          )}
+
+          {onBan && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onBan(username);
+                close();
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
+            >
+              <ShieldBan className="h-3.5 w-3.5" />
+              Ban
+            </button>
+          )}
         </div>
       )}
     </>

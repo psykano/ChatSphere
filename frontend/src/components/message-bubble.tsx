@@ -8,6 +8,9 @@ interface MessageBubbleProps {
   isOwn: boolean;
   showUsername?: boolean;
   onMention?: (username: string) => void;
+  onKick?: (username: string) => void;
+  onBan?: (username: string) => void;
+  onMute?: (username: string) => void;
 }
 
 function formatTime(dateStr: string): string {
@@ -15,7 +18,7 @@ function formatTime(dateStr: string): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function MessageBubble({ message, isOwn, showUsername = true, onMention }: MessageBubbleProps) {
+export function MessageBubble({ message, isOwn, showUsername = true, onMention, onKick, onBan, onMute }: MessageBubbleProps) {
   const isSystem =
     message.type === "system" ||
     message.type === "join" ||
@@ -48,7 +51,7 @@ export function MessageBubble({ message, isOwn, showUsername = true, onMention }
       className={cn("flex flex-col gap-0.5 max-w-[85%] sm:max-w-[75%]", isOwn ? "ml-auto items-end" : "items-start")}
     >
       {!isOwn && message.username && showUsername && (
-        <UserContextMenu username={message.username} onMention={onMention}>
+        <UserContextMenu username={message.username} onMention={onMention} onKick={onKick} onBan={onBan} onMute={onMute}>
           <span className="text-xs font-medium text-muted-foreground px-1">
             {message.username}
           </span>

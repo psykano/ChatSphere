@@ -175,4 +175,113 @@ describe("UserContextMenu", () => {
     await user.click(screen.getByTestId("outside"));
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
+
+  it("shows Kick option when onKick is provided", async () => {
+    const user = userEvent.setup();
+    render(
+      <UserContextMenu username="Alice" onKick={vi.fn()}>
+        <span>Alice</span>
+      </UserContextMenu>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Alice" }));
+    expect(screen.getByRole("menuitem", { name: "Kick" })).toBeInTheDocument();
+  });
+
+  it("shows Ban option when onBan is provided", async () => {
+    const user = userEvent.setup();
+    render(
+      <UserContextMenu username="Alice" onBan={vi.fn()}>
+        <span>Alice</span>
+      </UserContextMenu>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Alice" }));
+    expect(screen.getByRole("menuitem", { name: "Ban" })).toBeInTheDocument();
+  });
+
+  it("shows Mute option when onMute is provided", async () => {
+    const user = userEvent.setup();
+    render(
+      <UserContextMenu username="Alice" onMute={vi.fn()}>
+        <span>Alice</span>
+      </UserContextMenu>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Alice" }));
+    expect(screen.getByRole("menuitem", { name: "Mute" })).toBeInTheDocument();
+  });
+
+  it("hides moderation actions when callbacks are not provided", async () => {
+    const user = userEvent.setup();
+    render(
+      <UserContextMenu username="Alice">
+        <span>Alice</span>
+      </UserContextMenu>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Alice" }));
+    expect(screen.queryByRole("menuitem", { name: "Kick" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Ban" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Mute" })).not.toBeInTheDocument();
+  });
+
+  it("calls onKick and closes menu when Kick is clicked", async () => {
+    const user = userEvent.setup();
+    const onKick = vi.fn();
+    render(
+      <UserContextMenu username="Alice" onKick={onKick}>
+        <span>Alice</span>
+      </UserContextMenu>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Alice" }));
+    await user.click(screen.getByRole("menuitem", { name: "Kick" }));
+    expect(onKick).toHaveBeenCalledWith("Alice");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("calls onBan and closes menu when Ban is clicked", async () => {
+    const user = userEvent.setup();
+    const onBan = vi.fn();
+    render(
+      <UserContextMenu username="Alice" onBan={onBan}>
+        <span>Alice</span>
+      </UserContextMenu>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Alice" }));
+    await user.click(screen.getByRole("menuitem", { name: "Ban" }));
+    expect(onBan).toHaveBeenCalledWith("Alice");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("calls onMute and closes menu when Mute is clicked", async () => {
+    const user = userEvent.setup();
+    const onMute = vi.fn();
+    render(
+      <UserContextMenu username="Alice" onMute={onMute}>
+        <span>Alice</span>
+      </UserContextMenu>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Alice" }));
+    await user.click(screen.getByRole("menuitem", { name: "Mute" }));
+    expect(onMute).toHaveBeenCalledWith("Alice");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("shows separator before moderation actions", async () => {
+    const user = userEvent.setup();
+    render(
+      <UserContextMenu username="Alice" onKick={vi.fn()} onBan={vi.fn()} onMute={vi.fn()}>
+        <span>Alice</span>
+      </UserContextMenu>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Alice" }));
+    const separators = screen.getAllByRole("separator");
+    // One separator after username header, one before moderation actions
+    expect(separators.length).toBe(2);
+  });
 });

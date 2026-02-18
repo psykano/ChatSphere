@@ -29,6 +29,9 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
     hasMore,
     sendMessage,
     sendTyping,
+    sendKick,
+    sendBan,
+    sendMute,
     loadMore,
     disconnect,
     retry,
@@ -83,6 +86,27 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
 
   function handleMention(mentionUsername: string) {
     messageInputRef.current?.insertText(`@${mentionUsername} `);
+  }
+
+  const isCreator = session?.is_creator ?? false;
+
+  function findUserID(targetUsername: string): string | undefined {
+    return onlineUsers.find((u) => u.username === targetUsername)?.user_id;
+  }
+
+  function handleKick(targetUsername: string) {
+    const userID = findUserID(targetUsername);
+    if (userID) sendKick(userID);
+  }
+
+  function handleBan(targetUsername: string) {
+    const userID = findUserID(targetUsername);
+    if (userID) sendBan(userID);
+  }
+
+  function handleMute(targetUsername: string) {
+    const userID = findUserID(targetUsername);
+    if (userID) sendMute(userID);
   }
 
   function handleScroll() {
@@ -177,6 +201,9 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
                     isOwn={msg.user_id === session?.user_id}
                     showUsername={!grouped}
                     onMention={handleMention}
+                    onKick={isCreator && msg.user_id !== session?.user_id ? handleKick : undefined}
+                    onBan={isCreator && msg.user_id !== session?.user_id ? handleBan : undefined}
+                    onMute={isCreator && msg.user_id !== session?.user_id ? handleMute : undefined}
                   />
                 </div>
               );

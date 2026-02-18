@@ -245,6 +245,7 @@ func (h *Handler) sendSessionInfo(ctx context.Context, client *Client, resumed b
 		UserID:    client.userID,
 		Username:  client.username,
 		Resumed:   resumed,
+		IsCreator: client.isCreator,
 	}
 	data, err := json.Marshal(sp)
 	if err != nil {
