@@ -17,6 +17,11 @@ export interface OnlineUser {
   username: string;
 }
 
+export interface MuteStatus {
+  muted: boolean;
+  expiresAt: string | null; // RFC3339 timestamp or null for permanent
+}
+
 interface UseChatOptions {
   roomID: string;
   username?: string;
@@ -42,15 +47,20 @@ export function useChat({ roomID, username }: UseChatOptions) {
   const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [typingUsers, setTypingUsers] = useState<Map<string, string>>(new Map());
+  const [muteStatus, setMuteStatus] = useState<MuteStatus>({ muted: false, expiresAt: null });
   const loadingHistoryRef = useRef(false);
   const typingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const muteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Clean up typing timers on unmount.
+  // Clean up typing timers and mute timer on unmount.
   useEffect(() => {
     const timers = typingTimersRef.current;
     return () => {
       for (const timer of timers.values()) {
         clearTimeout(timer);
+      }
+      if (muteTimerRef.current) {
+        clearTimeout(muteTimerRef.current);
       }
     };
   }, []);
@@ -93,6 +103,26 @@ export function useChat({ roomID, username }: UseChatOptions) {
     if (envelope.type === "leave") {
       const msg = envelope.payload as ChatMessage;
       setMessages((prev) => [...prev, msg]);
+      return;
+    }
+    if (envelope.type === "mute_status") {
+      const payload = envelope.payload as { muted: boolean; expires_at?: string };
+      if (muteTimerRef.current) {
+        clearTimeout(muteTimerRef.current);
+        muteTimerRef.current = null;
+      }
+      setMuteStatus({ muted: payload.muted, expiresAt: payload.expires_at ?? null });
+      if (payload.muted && payload.expires_at) {
+        const remaining = new Date(payload.expires_at).getTime() - Date.now();
+        if (remaining > 0) {
+          muteTimerRef.current = setTimeout(() => {
+            muteTimerRef.current = null;
+            setMuteStatus({ muted: false, expiresAt: null });
+          }, remaining);
+        } else {
+          setMuteStatus({ muted: false, expiresAt: null });
+        }
+      }
       return;
     }
     if (envelope.type === "typing") {
@@ -194,6 +224,7 @@ export function useChat({ roomID, username }: UseChatOptions) {
     messages,
     onlineUsers,
     typingUsers,
+    muteStatus,
     connectionState: state,
     session,
     hasMore,

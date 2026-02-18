@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useImperativeHandle, forwardRef } from "react";
+import { useState, useRef, useMemo, useCallback, useEffect, useImperativeHandle, forwardRef } from "react";
 import { SendHorizontal } from "lucide-react";
 import { EmojiPicker } from "./emoji-picker";
 
@@ -9,17 +9,49 @@ export interface MessageInputHandle {
   insertText: (text: string) => void;
 }
 
+export interface MuteInfo {
+  muted: boolean;
+  expiresAt: string | null;
+}
+
 interface MessageInputProps {
   onSend: (content: string) => void;
   onTyping?: () => void;
   disabled?: boolean;
   readOnly?: boolean;
+  muteInfo?: MuteInfo;
 }
 
-export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(function MessageInput({ onSend, onTyping, disabled, readOnly }, ref) {
+function formatMuteRemaining(expiresAt: string): string {
+  const remaining = Math.max(0, Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 1000));
+  if (remaining <= 0) return "";
+  const minutes = Math.ceil(remaining / 60);
+  if (minutes === 1) return "1 minute";
+  return `${minutes} minutes`;
+}
+
+function computeMuteLabel(muteInfo?: MuteInfo): string {
+  if (!muteInfo?.muted) return "";
+  if (!muteInfo.expiresAt) return "You have been muted";
+  const text = formatMuteRemaining(muteInfo.expiresAt);
+  return text ? `You have been muted for ${text}` : "";
+}
+
+export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(function MessageInput({ onSend, onTyping, disabled, readOnly, muteInfo }, ref) {
   const [value, setValue] = useState("");
+  const [tick, setTick] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastTypingSentRef = useRef(0);
+
+  // Tick every second while muted with a timed expiry to update the countdown.
+  useEffect(() => {
+    if (!muteInfo?.muted || !muteInfo?.expiresAt) return;
+    const interval = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, [muteInfo?.muted, muteInfo?.expiresAt]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- tick triggers recomputation of time-based label
+  const muteLabel = useMemo(() => computeMuteLabel(muteInfo), [muteInfo, tick]);
 
   useImperativeHandle(ref, () => ({
     insertText(text: string) {
@@ -49,10 +81,12 @@ export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(fu
     }
   }, [onTyping]);
 
+  const isMuted = muteInfo?.muted ?? false;
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = value.trim();
-    if (!trimmed || disabled || readOnly) return;
+    if (!trimmed || disabled || readOnly || isMuted) return;
     onSend(trimmed);
     setValue("");
   }
@@ -81,34 +115,51 @@ export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(fu
     });
   }
 
+  const inputDisabled = disabled || readOnly || isMuted;
+  const placeholder = readOnly
+    ? "Set a username to start chatting"
+    : isMuted
+      ? "You are muted"
+      : "Type a message...";
+
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="flex items-end gap-2 border-t border-border bg-card p-3 sm:p-4"
-    >
-      <textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(e) => {
-          setValue(e.target.value);
-          if (e.target.value.trim()) emitTyping();
-        }}
-        onKeyDown={handleKeyDown}
-        placeholder={readOnly ? "Set a username to start chatting" : "Type a message..."}
-        disabled={disabled || readOnly}
-        rows={1}
-        aria-label="Message input"
-        className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-      />
-      <EmojiPicker onSelect={handleEmojiSelect} disabled={disabled || readOnly} />
-      <button
-        type="submit"
-        disabled={disabled || readOnly || !value.trim()}
-        aria-label="Send message"
-        className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
+    <div>
+      {isMuted && muteLabel && (
+        <div
+          role="alert"
+          className="border-t border-border bg-destructive/10 px-3 py-2 text-center text-sm font-medium text-destructive sm:px-4"
+        >
+          {muteLabel}
+        </div>
+      )}
+      <form
+        onSubmit={handleSubmit}
+        className="flex items-end gap-2 border-t border-border bg-card p-3 sm:p-4"
       >
-        <SendHorizontal className="h-4 w-4" />
-      </button>
-    </form>
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            if (e.target.value.trim()) emitTyping();
+          }}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          disabled={inputDisabled}
+          rows={1}
+          aria-label="Message input"
+          className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+        />
+        <EmojiPicker onSelect={handleEmojiSelect} disabled={inputDisabled} />
+        <button
+          type="submit"
+          disabled={inputDisabled || !value.trim()}
+          aria-label="Send message"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
+        >
+          <SendHorizontal className="h-4 w-4" />
+        </button>
+      </form>
+    </div>
   );
 });

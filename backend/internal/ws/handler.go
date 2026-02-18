@@ -628,6 +628,26 @@ func (h *Handler) handleMute(ctx context.Context, client *Client, payload json.R
 		Action:    message.ActionMute,
 		CreatedAt: time.Now(),
 	})
+
+	// Send mute status directly to the target user.
+	status := MuteStatusPayload{Muted: muted}
+	if muted && duration > 0 {
+		status.ExpiresAt = time.Now().Add(duration).Format(time.RFC3339)
+	}
+	h.sendMuteStatus(ctx, target, status)
+}
+
+// sendMuteStatus queues a mute_status envelope to the given client.
+func (h *Handler) sendMuteStatus(_ context.Context, client *Client, status MuteStatusPayload) {
+	data, err := json.Marshal(status)
+	if err != nil {
+		return
+	}
+	env, err := json.Marshal(Envelope{Type: "mute_status", Payload: data})
+	if err != nil {
+		return
+	}
+	h.hub.ConnMgr().Send(client, env)
 }
 
 // formatDuration returns a human-readable duration string like "5 minutes"

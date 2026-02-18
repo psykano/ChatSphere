@@ -141,6 +141,12 @@ type MutePayload struct {
 	Duration int    `json:"duration,omitempty"` // seconds
 }
 
+// MuteStatusPayload is sent to a user to notify them of their mute status.
+type MuteStatusPayload struct {
+	Muted     bool   `json:"muted"`
+	ExpiresAt string `json:"expires_at,omitempty"` // RFC3339 timestamp
+}
+
 // SetUsernamePayload is sent by the client to change their username in the room.
 type SetUsernamePayload struct {
 	Username string `json:"username"`

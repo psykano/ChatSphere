@@ -127,4 +127,61 @@ describe("MessageInput", () => {
     render(<MessageInput onSend={vi.fn()} readOnly />);
     expect(screen.getByLabelText("Open emoji picker")).toBeDisabled();
   });
+
+  it("disables input and shows mute banner when muted with expiry", () => {
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    render(
+      <MessageInput onSend={vi.fn()} muteInfo={{ muted: true, expiresAt }} />,
+    );
+    expect(screen.getByLabelText("Message input")).toBeDisabled();
+    expect(screen.getByLabelText("Send message")).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /You have been muted for \d+ minutes/,
+    );
+  });
+
+  it("shows permanent mute banner without expiry", () => {
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        muteInfo={{ muted: true, expiresAt: null }}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("You have been muted");
+    expect(screen.getByLabelText("Message input")).toBeDisabled();
+  });
+
+  it("does not show mute banner when not muted", () => {
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        muteInfo={{ muted: false, expiresAt: null }}
+      />,
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Message input")).not.toBeDisabled();
+  });
+
+  it("shows muted placeholder when muted", () => {
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        muteInfo={{ muted: true, expiresAt: null }}
+      />,
+    );
+    expect(screen.getByLabelText("Message input")).toHaveAttribute(
+      "placeholder",
+      "You are muted",
+    );
+  });
+
+  it("disables emoji picker when muted", () => {
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        muteInfo={{ muted: true, expiresAt: null }}
+      />,
+    );
+    expect(screen.getByLabelText("Open emoji picker")).toBeDisabled();
+  });
 });

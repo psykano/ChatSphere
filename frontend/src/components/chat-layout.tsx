@@ -24,6 +24,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
     messages,
     onlineUsers,
     typingUsers,
+    muteStatus,
     connectionState,
     session,
     hasMore,
@@ -223,6 +224,7 @@ export function ChatLayout({ room, onLeave }: ChatLayoutProps) {
           onTyping={sendTyping}
           disabled={connectionState !== "connected"}
           readOnly={!username}
+          muteInfo={muteStatus}
         />
       </div>
     </div>

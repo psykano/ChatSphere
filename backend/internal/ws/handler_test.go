@@ -2197,6 +2197,12 @@ func TestHandlerMute(t *testing.T) {
 		t.Errorf("bob should receive system mute message, got %q", env2.Type)
 	}
 
+	// Bob receives mute_status notification.
+	envStatus, _ := readMessage(t, conn2)
+	if envStatus.Type != "mute_status" {
+		t.Errorf("expected mute_status, got %q", envStatus.Type)
+	}
+
 	// Bob tries to send a chat — should fail.
 	sendEnvelope(t, conn2, "chat", ChatPayload{Content: "hello"})
 
@@ -2217,6 +2223,7 @@ func TestHandlerMute(t *testing.T) {
 		t.Errorf("expected 'unmuted' in content, got %q", msg3.Content)
 	}
 	drainSystemMessages(t, conn2, 1) // unmute message
+	drainSystemMessages(t, conn2, 1) // unmute mute_status
 
 	// Bob can now send messages.
 	sendEnvelope(t, conn2, "chat", ChatPayload{Content: "I can talk again"})
@@ -3091,6 +3098,20 @@ func TestHandlerTimedMute(t *testing.T) {
 		t.Errorf("bob should receive system mute message, got %q", env2.Type)
 	}
 
+	// Bob receives mute_status with expires_at.
+	envStatus, _ := readMessage(t, conn2)
+	if envStatus.Type != "mute_status" {
+		t.Errorf("expected mute_status, got %q", envStatus.Type)
+	}
+	var status MuteStatusPayload
+	json.Unmarshal(envStatus.Payload, &status)
+	if !status.Muted {
+		t.Errorf("expected muted=true")
+	}
+	if status.ExpiresAt == "" {
+		t.Errorf("expected expires_at to be set for timed mute")
+	}
+
 	// Bob tries to send a chat — should fail.
 	sendEnvelope(t, conn2, "chat", ChatPayload{Content: "hello"})
 	envErr, _ := readMessage(t, conn2)
@@ -3121,6 +3142,7 @@ func TestHandlerTimedMuteExpires(t *testing.T) {
 	sendEnvelope(t, conn1, "mute", MutePayload{UserID: sp2.UserID, Duration: 60})
 	drainSystemMessages(t, conn1, 1) // "bob was muted"
 	drainSystemMessages(t, conn2, 1) // "bob was muted"
+	drainSystemMessages(t, conn2, 1) // mute_status
 
 	// Manually expire the mute.
 	hub.mu.Lock()
