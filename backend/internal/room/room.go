@@ -308,7 +308,7 @@ func (m *Manager) List() []*Room {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var result []*Room
+	result := make([]*Room, 0)
 	for _, r := range m.rooms {
 		if r.Public {
 			result = append(result, r)
