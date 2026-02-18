@@ -13,6 +13,11 @@ import (
 type ComposeFile struct {
 	Services map[string]Service `yaml:"services"`
 	Volumes  map[string]any     `yaml:"volumes"`
+	Networks map[string]Network `yaml:"networks"`
+}
+
+type Network struct {
+	Driver string `yaml:"driver"`
 }
 
 type Service struct {
@@ -24,6 +29,8 @@ type Service struct {
 	Volumes     []string       `yaml:"volumes"`
 	Healthcheck *Healthcheck   `yaml:"healthcheck"`
 	Restart     string         `yaml:"restart"`
+	Command     string         `yaml:"command"`
+	Networks    []string       `yaml:"networks"`
 }
 
 type Build struct {
@@ -265,5 +272,42 @@ func TestFrontendHealthcheck(t *testing.T) {
 	frontend := readCompose(t).Services["frontend"]
 	if frontend.Healthcheck == nil {
 		t.Error("frontend should have a healthcheck")
+	}
+}
+
+func TestNetworkDefined(t *testing.T) {
+	compose := readCompose(t)
+	net, ok := compose.Networks["chatsphere"]
+	if !ok {
+		t.Fatal("chatsphere network should be defined at the top level")
+	}
+	if net.Driver != "bridge" {
+		t.Errorf("chatsphere network driver should be bridge, got %q", net.Driver)
+	}
+}
+
+func TestAllServicesOnNetwork(t *testing.T) {
+	compose := readCompose(t)
+	for name, svc := range compose.Services {
+		found := false
+		for _, n := range svc.Networks {
+			if n == "chatsphere" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("service %s should be on chatsphere network", name)
+		}
+	}
+}
+
+func TestRedisMemoryLimit(t *testing.T) {
+	redis := readCompose(t).Services["redis"]
+	if !strings.Contains(redis.Command, "--maxmemory") {
+		t.Error("redis should have a maxmemory setting for local development")
+	}
+	if !strings.Contains(redis.Command, "--maxmemory-policy") {
+		t.Error("redis should have a maxmemory-policy setting")
 	}
 }
