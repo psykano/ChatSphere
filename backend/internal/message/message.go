@@ -15,13 +15,14 @@ const (
 type Action string
 
 const (
-	ActionJoin       Action = "join"
-	ActionLeave      Action = "leave"
-	ActionKick       Action = "kick"
-	ActionBan        Action = "ban"
-	ActionMute       Action = "mute"
-	ActionExpiration   Action = "expiration"
-	ActionSetUsername  Action = "set_username"
+	ActionJoin        Action = "join"
+	ActionRejoin      Action = "rejoin"
+	ActionLeave       Action = "leave"
+	ActionKick        Action = "kick"
+	ActionBan         Action = "ban"
+	ActionMute        Action = "mute"
+	ActionExpiration  Action = "expiration"
+	ActionSetUsername Action = "set_username"
 )
 
 // Message represents a chat message.

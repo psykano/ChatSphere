@@ -306,8 +306,29 @@ func TestHandlerSessionResumption(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// No "joined" system message should have been broadcast for a resumed session.
-	// Verify by sending a chat and confirming the next message is the chat, not a system message.
+	// A "rejoined" system message should be broadcast on session resumption.
+	readCtx1, readCancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer readCancel1()
+	_, rejoinData, err := conn2.Read(readCtx1)
+	if err != nil {
+		t.Fatalf("read rejoin message error: %v", err)
+	}
+	var rejoinEnv Envelope
+	if err := json.Unmarshal(rejoinData, &rejoinEnv); err != nil {
+		t.Fatalf("unmarshal rejoin envelope error: %v", err)
+	}
+	if rejoinEnv.Type != string(message.TypeSystem) {
+		t.Errorf("expected system envelope for rejoin, got %q", rejoinEnv.Type)
+	}
+	var rejoinMsg message.Message
+	if err := json.Unmarshal(rejoinEnv.Payload, &rejoinMsg); err != nil {
+		t.Fatalf("unmarshal rejoin message error: %v", err)
+	}
+	if rejoinMsg.Action != message.ActionRejoin {
+		t.Errorf("expected action %q, got %q", message.ActionRejoin, rejoinMsg.Action)
+	}
+
+	// Verify the chat arrives after the rejoin system message.
 	chatPayload, _ := json.Marshal(ChatPayload{Content: "I'm back"})
 	chatEnv, _ := json.Marshal(Envelope{Type: "chat", Payload: chatPayload})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -328,7 +349,7 @@ func TestHandlerSessionResumption(t *testing.T) {
 		t.Fatalf("unmarshal error: %v", err)
 	}
 	if env.Type != string(message.TypeChat) {
-		t.Errorf("expected first message after resume to be 'chat', got %q (should not get 'joined' system message)", env.Type)
+		t.Errorf("expected 'chat' type after rejoin message, got %q", env.Type)
 	}
 }
 
@@ -2329,11 +2350,14 @@ func TestHandlerHostResumedKeepsHostStatus(t *testing.T) {
 	// Alice (resumed) should still be able to kick Bob.
 	sendEnvelope(t, conn3, "kick", KickPayload{UserID: sp2.UserID})
 
-	// Read backfill first if any, then the kick message.
+	// Read backfill and rejoin messages first, then the kick message.
 	// The backfill may contain the "alice left" message.
 	for {
 		env, msg := readMessage(t, conn3)
 		if env.Type == "backfill" {
+			continue
+		}
+		if env.Type == "system" && msg.Action == message.ActionRejoin {
 			continue
 		}
 		if env.Type == "system" && msg.Action == message.ActionKick {

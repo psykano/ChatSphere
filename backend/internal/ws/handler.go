@@ -94,8 +94,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.sessions.MarkDisconnected(client.sessionID)
 	}()
 
-	// Only broadcast "joined" for new connections, not resumptions.
-	if !client.resumed {
+	if client.resumed {
+		h.hub.Broadcast(client.roomID, &message.Message{
+			ID:        generateClientID(),
+			RoomID:    client.roomID,
+			Username:  client.username,
+			Content:   client.username + " rejoined the room",
+			Type:      message.TypeSystem,
+			Action:    message.ActionRejoin,
+			CreatedAt: time.Now(),
+		})
+	} else {
 		h.hub.Broadcast(client.roomID, &message.Message{
 			ID:        generateClientID(),
 			RoomID:    client.roomID,
