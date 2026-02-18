@@ -91,8 +91,8 @@ export function useChat({ roomID, username }: UseChatOptions) {
       return;
     }
     if (envelope.type === "presence") {
-      const users = envelope.payload as OnlineUser[];
-      setOnlineUsers(users);
+      const payload = envelope.payload as { users: OnlineUser[] };
+      setOnlineUsers(payload.users ?? []);
       return;
     }
     if (envelope.type === "join") {
@@ -184,7 +184,7 @@ export function useChat({ roomID, username }: UseChatOptions) {
   const sendMessage = useCallback(
     (content: string) => {
       if (!content.trim()) return;
-      send("message", { content: content.trim() });
+      send("chat", { content: content.trim() });
     },
     [send],
   );
